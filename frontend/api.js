@@ -86,3 +86,12 @@ export async function startAnalysis(file, key) {
 export async function getSource(id, key, signal) {
   return (await apiRequest(`/api/v1/jobs/${encodeURIComponent(id)}/video`, key, { signal })).blob();
 }
+
+export async function getJobs(key, filters, signal) {
+  const query = new URLSearchParams(filters);
+  return (await apiRequest(`/api/v1/jobs?${query}`, key, { signal })).json();
+}
+
+export async function getRules(key, signal) {
+  return (await apiRequest("/api/v1/rules", key, { signal })).json();
+}

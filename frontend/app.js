@@ -1,5 +1,6 @@
 import { getSystem, getJob, startAnalysis, getSource } from "./api.js";
 import { SourcePlayer, EvidenceViewer, formatTime, formatSize, validFrame, createJsonDownload } from "./media.js";
+import { ServiceWorkspace } from "./service.js";
 
 const byId = id => document.getElementById(id);
 const form = byId("analyze-form");
@@ -31,6 +32,7 @@ let runNumber = 0;
 let locked = false;
 let sourceRequest = null;
 let resultDownloadUrl = null;
+let workspace = null;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -56,12 +58,14 @@ function setLocked(value) {
   dropzone.dataset.locked = String(value);
   dropzone.setAttribute("aria-disabled", String(value));
   byId("submit-label").textContent = value ? "Идёт проверка…" : "Начать проверку";
+  workspace?.updateAccess();
 }
 
 function jobLink(id) {
   const url = new URL(location.href);
   if (id) url.searchParams.set("job", id);
   else url.searchParams.delete("job");
+  if (id) url.hash = "review";
   return url;
 }
 
@@ -70,6 +74,7 @@ function rememberJob(id) {
   byId("resume-job").value = id || "";
   byId("copy-job").hidden = !id;
   byId("job-link").hidden = true;
+  if (id) workspace?.route();
 }
 
 function resetReview() {
@@ -99,6 +104,7 @@ function clearResult() {
   byId("export-result").removeAttribute("href");
   eventIndex.replaceChildren();
   eventDetail.replaceChildren();
+  byId("print-all-events")?.replaceChildren();
   byId("result-announcement").textContent = "";
 }
 
@@ -144,12 +150,13 @@ async function checkSystem(key) {
     if (limits.max_upload_bytes) limitText.push("до " + formatSize(limits.max_upload_bytes));
     if (limits.max_video_duration_sec) limitText.push("до " + formatTime(limits.max_video_duration_sec));
     byId("file-help").textContent = limitText.join(" · ");
+    workspace?.setConnection(info, key);
     return info;
   } catch (error) {
     byId("connection-state").textContent = "Нет подключения";
     byId("connection-state").dataset.ready = "false";
-    byId("service-note").hidden = false;
-    byId("service-note").textContent = error.message;
+    byId("service-note").hidden = true;
+    workspace?.feedback("connection-feedback", error.message, "error");
     throw error;
   } finally {
     checkButton.disabled = locked;
@@ -364,7 +371,8 @@ function renderResult(result) {
     noEvents.querySelector(".no-events-icon").textContent = clear ? "✓" : "!";
   }
   byId("result-announcement").textContent = "Проверка завершена. " + summary.textContent;
-  resultsTitle.focus();
+  preparePrintReport(result);
+  if (!byId("view-analysis").hidden) resultsTitle.focus();
 }
 
 async function pollJob(expectedRun = runNumber, restoring = false) {
@@ -377,7 +385,6 @@ async function pollJob(expectedRun = runNumber, restoring = false) {
     activeMetadata = job.metadata || {};
     activeFilename = activeMetadata.filename || activeFilename;
     if (restoring && !player.url) player.setPending(activeFilename);
-    rememberJob(id);
     if (job.status === "processing") {
       setLocked(true);
       setStatus("processing", "Сервис проверяет запись. Результат появится автоматически.");
@@ -386,9 +393,11 @@ async function pollJob(expectedRun = runNumber, restoring = false) {
       setLocked(false);
       setStatus("done", "Результат готов. Сверьте каждый эпизод с исходной записью.");
       renderResult(job);
+      workspace?.jobUpdated();
     } else if (job.status === "failed") {
       setLocked(false);
       setStatus("failed", failureMessage(job.error));
+      workspace?.jobUpdated();
     } else throw new Error("Сервис вернул неизвестное состояние задачи.");
   } catch (error) {
     if (expectedRun !== runNumber || id !== activeJobId) return;
@@ -403,7 +412,12 @@ async function restoreJob() {
   const id = byId("resume-job").value.trim().toLowerCase();
   const key = keyInput.value.trim();
   if (!uuidPattern.test(id)) return setError("Введите полный номер задачи в формате UUID.", byId("resume-job"));
-  if (!key) return setError("Введите ключ доступа.", keyInput);
+  if (!key) {
+    workspace?.navigate("connection");
+    workspace?.feedback("connection-feedback", "Введите ключ доступа, чтобы открыть сохранённую проверку.");
+    keyInput.focus();
+    return;
+  }
   resetReview();
   fileInput.value = "";
   byId("file-label").textContent = "Выбрать видео";
@@ -413,6 +427,7 @@ async function restoreJob() {
   activeFilename = "";
   activeJobId = id;
   activeKey = key;
+  rememberJob(id);
   setError("");
   setLocked(true);
   setStatus("processing", "Запрашиваем сохранённую задачу…");
@@ -428,7 +443,12 @@ form.addEventListener("submit", async event => {
   if (!file) return setError("Выберите видео в формате .mov.", fileInput);
   if (!file.name.toLowerCase().endsWith(".mov")) return setError("Поддерживаются только файлы .mov.", fileInput);
   if (file.size === 0) return setError("Файл пустой. Выберите другую запись.", fileInput);
-  if (!key) return setError("Введите ключ доступа.", keyInput);
+  if (!key) {
+    workspace?.navigate("connection");
+    workspace?.feedback("connection-feedback", "Подключитесь к сервису, затем вернитесь к выбранной записи.");
+    keyInput.focus();
+    return;
+  }
   setLocked(true);
   let uploadStarted = false;
   try {
@@ -463,13 +483,20 @@ form.addEventListener("submit", async event => {
 fileInput.addEventListener("change", () => chooseFile(fileInput.files[0]));
 keyInput.addEventListener("input", () => {
   setError("");
+  workspace?.invalidate();
   byId("connection-state").textContent = "Не проверен";
   byId("service-note").hidden = true;
   byId("connection-state").removeAttribute("data-ready");
 });
 byId("check-service").addEventListener("click", async () => {
   try { await checkSystem(keyInput.value.trim()); }
-  catch (error) { setError(error.message, keyInput); }
+  catch (error) { workspace?.feedback("connection-feedback", error.message, "error"); keyInput.focus(); }
+});
+keyInput.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (!byId("check-service").disabled) byId("check-service").click();
+  }
 });
 byId("key-visibility").addEventListener("click", () => {
   const visible = keyInput.type === "password";
@@ -498,7 +525,7 @@ dropzone.addEventListener("drop", event => {
 });
 byId("retry-button").addEventListener("click", () => {
   const key = keyInput.value.trim();
-  if (!key) return setError("Введите ключ доступа.", keyInput);
+  if (!key) { workspace?.navigate("connection"); keyInput.focus(); return; }
   activeKey = key;
   pollJob();
 });
@@ -539,13 +566,77 @@ byId("copy-job").addEventListener("click", async () => {
   }
 });
 
+workspace = new ServiceWorkspace({
+  getKey: () => keyInput.value.trim(),
+  isBusy: () => locked,
+  getActiveJob: () => activeJobId,
+  onOpenJob: async id => {
+    byId("resume-job").value = id;
+    await restoreJob();
+  },
+  onNewCheck: () => {
+    if (!activeJobId && fileInput.files.length) return;
+    fileInput.value = "";
+    chooseFile(null);
+    statusEmpty.querySelector("h3").textContent = "Добавьте запись для проверки";
+    statusEmpty.querySelector("p").textContent = "После выбора файла здесь появится видео. Результат сохранится в журнале автоматически.";
+  },
+  onDisconnect: () => {
+    fileInput.value = "";
+    chooseFile(null);
+  },
+});
 const savedJob = new URL(location.href).searchParams.get("job");
-if (savedJob && uuidPattern.test(savedJob)) {
-  byId("resume-panel").open = true;
-  byId("resume-job").value = savedJob;
-  statusEmpty.querySelector("h3").textContent = "Откройте сохранённую проверку";
-  statusEmpty.querySelector("p").textContent = "Введите ключ доступа и нажмите «Открыть задачу». Ключ не хранится в ссылке.";
+if (savedJob && uuidPattern.test(savedJob) && !workspace.connected) {
+  statusEmpty.querySelector("h3").textContent = "Подключитесь, чтобы открыть проверку";
+  const copy = statusEmpty.querySelector("p");
+  copy.textContent = "Для доступа к сохранённому результату нужен ключ. ";
+  const link = element("a", "", "Подключиться к сервису →");
+  link.href = "#connection";
+  copy.append(link);
 }
+
+function preparePrintReport(result) {
+  let report = byId("print-all-events");
+  if (!report) {
+    report = element("section", "print-only");
+    report.id = "print-all-events";
+    resultsPanel.append(report);
+  }
+  report.replaceChildren();
+  report.append(element("h2", "", "Кассовый контроль · Отчёт по проверке"));
+  report.append(element("p", "", "Вердикт: " + (result.verdict === "violation" ? "обнаружены события, требующие проверки" : result.verdict === "no_violation" && result.analysis_scope?.full_video_checked ? "по активным процедурам нарушений не обнаружено" : "результат требует уточнения")));
+  const events = Array.isArray(result.violations) ? result.violations.slice().sort((a, b) => a.timecode_sec - b.timecode_sec) : [];
+  for (const [index, event] of events.entries()) {
+    const article = element("article", "print-event");
+    article.append(element("h3", "", `${index + 1}. ${event.type} · ${formatTime(event.timecode_sec)}`));
+    article.append(element("p", "", event.description || ""));
+    const frames = element("div", "print-frames");
+    for (const frame of (event.evidence_frames || []).filter(validFrame).slice(0, 3)) {
+      const figure = element("figure");
+      const image = element("img");
+      image.src = "data:image/jpeg;base64," + frame.image_base64;
+      image.alt = "Кадр на " + formatTime(frame.timestamp_sec);
+      figure.append(image, element("figcaption", "", formatTime(frame.timestamp_sec)));
+      frames.append(figure);
+    }
+    article.append(frames);
+    article.append(element("p", "", [event.rule?.title, event.rule?.clause].filter(Boolean).join(" · ")));
+    if (event.rule?.source_url) article.append(element("p", "print-reference", event.rule.source_url));
+    report.append(article);
+  }
+  report.append(element("p", "", "Вывод относится к активным процедурам сервиса. Сверьте найденные эпизоды с исходной видеозаписью."));
+}
+byId("print-result").addEventListener("click", async () => {
+  if (!currentResult) return;
+  const button = byId("print-result");
+  button.disabled = true;
+  try {
+    const images = [...byId("print-all-events").querySelectorAll("img")];
+    await Promise.allSettled(images.map(image => image.decode()));
+    window.print();
+  } finally { button.disabled = false; }
+});
 window.addEventListener("beforeunload", () => {
   if (resultDownloadUrl) URL.revokeObjectURL(resultDownloadUrl);
   sourceRequest?.abort();

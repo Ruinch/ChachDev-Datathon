@@ -68,11 +68,39 @@ class JobStore:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
             if "metadata_json" not in columns:
                 conn.execute("ALTER TABLE jobs ADD COLUMN metadata_json TEXT")
+            summary_columns = {
+                "verdict": "TEXT",
+                "event_count": "INTEGER NOT NULL DEFAULT 0",
+                "analysis_scope_json": "TEXT",
+            }
+            needs_summary_migration = bool(summary_columns.keys() - columns)
+            for name, definition in summary_columns.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+            if needs_summary_migration:
+                # Extract only small fields in SQLite once. History queries must never
+                # load stored frames or descriptions into the API process.
+                conn.execute("""
+                    UPDATE jobs SET
+                        verdict = CASE WHEN status = 'done' AND json_valid(result_json)
+                            THEN CASE WHEN json_extract(result_json, '$.verdict') IN ('violation', 'no_violation')
+                                THEN json_extract(result_json, '$.verdict') END END,
+                        event_count = CASE WHEN status = 'done' AND json_valid(result_json)
+                            THEN CASE WHEN json_type(result_json, '$.violations') = 'array'
+                                THEN json_array_length(result_json, '$.violations') ELSE 0 END ELSE 0 END,
+                        analysis_scope_json = CASE WHEN status = 'done' AND json_valid(result_json)
+                            THEN CASE WHEN json_type(result_json, '$.analysis_scope') = 'object'
+                                THEN json_extract(result_json, '$.analysis_scope') END END
+                """)
+            conn.execute("CREATE INDEX IF NOT EXISTS jobs_history_order ON jobs(created_at DESC, job_id DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS jobs_verdict ON jobs(verdict)")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.create_function("unicode_casefold", 1, lambda value: value.casefold() if isinstance(value, str) else "", deterministic=True)
         try:
             yield conn
             conn.commit()
@@ -112,12 +140,20 @@ class JobStore:
         return record
 
     def set_done(self, job_id: str, result: dict) -> None:
+        verdict = result.get("verdict")
+        if verdict not in ("violation", "no_violation"):
+            verdict = None
+        events = result.get("violations")
+        scope = result.get("analysis_scope")
         with self._connection() as conn:
             changed = conn.execute(
                 "UPDATE jobs SET status = 'done', updated_at = ?, result_json = ?, "
+                "verdict = ?, event_count = ?, analysis_scope_json = ?, "
                 "error_code = NULL, error_message = NULL "
                 "WHERE job_id = ? AND status = 'processing'",
-                (utc_now(), json.dumps(result, ensure_ascii=False), job_id),
+                (utc_now(), json.dumps(result, ensure_ascii=False), verdict,
+                 len(events) if isinstance(events, list) else 0,
+                 json.dumps(scope, ensure_ascii=False) if isinstance(scope, dict) else None, job_id),
             ).rowcount
         if changed != 1:
             raise RuntimeError("Job is no longer processing")
@@ -142,8 +178,70 @@ class JobStore:
                 (utc_now(),),
             )
 
+    def list_jobs(
+        self, *, limit: int = 20, offset: int = 0, q: str = "", status: str = "all", verdict: str = "all",
+    ) -> dict:
+        conditions: list[str] = []
+        parameters: list[str | int] = []
+        if q:
+            # LIKE's wildcards are literal filename characters supplied by the user.
+            escaped = q.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conditions.append("unicode_casefold(filename) LIKE ? ESCAPE '\\'")
+            parameters.append(f"%{escaped}%")
+        if status != "all":
+            conditions.append("status = ?")
+            parameters.append(status)
+        if verdict != "all":
+            conditions.append("status = 'done' AND verdict = ?")
+            parameters.append(verdict)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        with self._connection() as conn:
+            # Counts and page use a consistent snapshot while an analysis completes.
+            conn.execute("BEGIN")
+            summary = dict(conn.execute("""
+                SELECT COUNT(*) AS total,
+                    COALESCE(SUM(status = 'processing'), 0) AS processing,
+                    COALESCE(SUM(status = 'done'), 0) AS done,
+                    COALESCE(SUM(status = 'failed'), 0) AS failed,
+                    COALESCE(SUM(status = 'done' AND verdict = 'violation'), 0) AS violation,
+                    COALESCE(SUM(status = 'done' AND verdict = 'no_violation'), 0) AS no_violation
+                FROM jobs
+            """).fetchone())
+            total = conn.execute("SELECT COUNT(*) FROM jobs" + where, parameters).fetchone()[0]
+            rows = conn.execute(
+                "SELECT job_id, status, filename, created_at, updated_at, metadata_json, "
+                "verdict, event_count, analysis_scope_json FROM jobs" + where
+                + " ORDER BY created_at DESC, job_id DESC LIMIT ? OFFSET ?",
+                [*parameters, limit, offset],
+            ).fetchall()
+        items = []
+        for row in rows:
+            raw_metadata = _json_object(row["metadata_json"])
+            item = {
+                "job_id": row["job_id"], "status": row["status"], "verdict": row["verdict"],
+                "event_count": row["event_count"],
+                "metadata": {
+                    "filename": row["filename"],
+                    **{key: raw_metadata.get(key) for key in ("size_bytes", "duration_sec", "width", "height", "codec")},
+                    "created_at": row["created_at"], "updated_at": row["updated_at"],
+                },
+            }
+            scope = _json_object(row["analysis_scope_json"])
+            if scope:
+                item["analysis_scope"] = scope
+            items.append(item)
+        return {"items": items, "total": total, "limit": limit, "offset": offset, "summary": summary}
+
     def job_dir(self, job_id: str) -> Path:
         return self.jobs_dir / job_id
 
     def evidence_dir(self, job_id: str) -> Path:
         return self.job_dir(job_id) / "evidence"
+
+
+def _json_object(value: str | None) -> dict:
+    try:
+        result = json.loads(value) if value else {}
+    except (ValueError, TypeError):
+        return {}
+    return result if isinstance(result, dict) else {}

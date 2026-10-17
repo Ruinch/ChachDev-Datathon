@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas import DoneResponse, FailedResponse, JobError, ProcessingResponse
+from app.schemas import AnalysisScope, DoneResponse, FailedResponse, JobError, ProcessingResponse, RuleReference
 
 
 class JobMetadata(BaseModel):
@@ -76,3 +76,48 @@ class SystemStatusResponse(BaseModel):
     limits: SystemLimits
     busy: bool
     unavailable_reason: JobError | None
+
+
+class JobHistoryItem(BaseModel):
+    job_id: str
+    status: Literal["processing", "done", "failed"]
+    verdict: Literal["violation", "no_violation"] | None
+    event_count: int = Field(ge=0)
+    metadata: JobMetadata
+    analysis_scope: AnalysisScope | None = None
+
+
+class JobHistorySummary(BaseModel):
+    total: int
+    processing: int
+    done: int
+    failed: int
+    violation: int
+    no_violation: int
+
+
+class JobHistoryResponse(BaseModel):
+    items: list[JobHistoryItem]
+    total: int = Field(description="Number of jobs matching the current filters")
+    limit: int
+    offset: int
+    summary: JobHistorySummary = Field(description="Counts across all jobs, independent of current filters")
+
+
+class RuleCatalogItem(BaseModel):
+    id: str
+    event_type: str
+    enabled: bool
+    verification: Literal["candidate", "verified"]
+    verified_on: str | None
+    reference: RuleReference
+    observable_signals: list[str]
+    required_context: list[str]
+    limitations: list[str]
+    verification_note: str
+
+
+class RuleCatalogResponse(BaseModel):
+    items: list[RuleCatalogItem]
+    enabled_count: int
+    total: int

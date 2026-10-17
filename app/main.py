@@ -6,10 +6,10 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path, PureWindowsPath
-from typing import Callable
+from typing import Callable, Literal
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, File, HTTPException, Request, Security, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, Security, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +17,7 @@ from fastapi.security import APIKeyHeader
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.analyzer import LocalAnalyzer, UnconfiguredAnalyzer
-from app.api_schemas import ApiErrorResponse, JobResponse, ProcessingJobResponse, SystemStatusResponse
+from app.api_schemas import ApiErrorResponse, JobHistoryResponse, JobResponse, ProcessingJobResponse, RuleCatalogResponse, SystemStatusResponse
 from app.config import Settings
 from app.rules import load_rule_catalog
 from app.storage import JobStore
@@ -233,6 +233,45 @@ def create_app(
     )
     def get_system():
         return system_status()
+
+    @app.get(
+        "/api/v1/jobs", response_model=None, dependencies=[API_AUTH],
+        responses={
+            **AUTH_ERRORS,
+            200: {"model": JobHistoryResponse, "description": "Lightweight job history, newest first; no evidence images or event descriptions"},
+        },
+    )
+    def list_jobs(
+        limit: int = Query(20, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        q: str = Query("", max_length=255, description="Case-insensitive literal filename substring"),
+        status: Literal["all", "processing", "done", "failed"] = "all",
+        verdict: Literal["all", "violation", "no_violation"] = "all",
+    ):
+        return store.list_jobs(limit=limit, offset=offset, q=q, status=status, verdict=verdict)
+
+    @app.get(
+        "/api/v1/rules", response_model=None, dependencies=[API_AUTH],
+        responses={
+            **AUTH_ERRORS,
+            200: {"model": RuleCatalogResponse, "description": "Local rule catalog including disabled candidates and their verification state"},
+            503: {"model": ApiErrorResponse, "description": "The local rule catalog is missing or invalid"},
+        },
+    )
+    def get_rules():
+        if catalog is None or catalog_error:
+            raise _error(503, "invalid_rule_catalog", "The local rule catalog is missing or invalid")
+        items = [{
+            "id": rule.id, "event_type": rule.event_type, "enabled": rule.enabled,
+            "verification": rule.verification,
+            "verified_on": rule.verified_on.isoformat() if rule.verified_on else None,
+            "reference": rule.reference.model_dump(),
+            "observable_signals": rule.observable_conditions,
+            "required_context": [],
+            "limitations": rule.exclusions,
+            "verification_note": rule.verification_note,
+        } for rule in catalog.rules]
+        return {"items": items, "enabled_count": len(catalog.enabled_rule_ids), "total": len(items)}
 
     @app.post(
         "/api/v1/analyze", status_code=202, response_model=None, dependencies=[API_AUTH],

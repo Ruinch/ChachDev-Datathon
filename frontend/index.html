@@ -4,51 +4,70 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#182a38" />
+    <meta name="theme-color" content="#182d40" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="description" content="Локальная проверка видеозаписей кассовых процедур с таймкодами, кадрами и ссылками на правила." />
-    <title>Новая проверка · Кассовый контроль</title>
+    <title>Кассовый контроль · Сервис проверки видеозаписей</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="/static/app.js" type="module"></script>
   </head>
   <body>
-    <a class="skip-link" href="#main-content">Перейти к проверке</a>
-
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brand" aria-label="Кассовый контроль">
+    <a class="skip-link" href="#main-content">Перейти к содержимому</a>
+    <div class="app-shell">
+      <aside class="app-sidebar" aria-label="Разделы сервиса">
+        <a class="brand" href="#checks" aria-label="Кассовый контроль — журнал проверок">
           <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
-          <span class="brand-copy"><strong>Кассовый контроль</strong><small>Проверка видеозаписей</small></span>
-        </div>
-        <div class="topbar-meta"><span class="topbar-pulse" aria-hidden="true"></span>Локальный сервис <span class="topbar-divider" aria-hidden="true"></span> MVP</div>
-      </div>
-    </header>
-
-    <main class="page" id="main-content">
-      <div class="page-heading">
-        <div>
-          <p class="section-kicker">КАССОВЫЕ ПРОЦЕДУРЫ <span aria-hidden="true">/</span> НОВАЯ ПРОВЕРКА</p>
-          <h1>Проверка видеозаписи</h1>
-          <p class="page-description">Загрузите .mov: сервис покажет события с таймкодами, кадрами и ссылками на правила.</p>
-        </div>
-        <div class="process-legend" aria-label="Порядок проверки">
-          <span>01 <strong>Загрузка</strong></span>
-          <span class="legend-line" aria-hidden="true"></span>
-          <span>02 <strong>Обработка</strong></span>
-          <span class="legend-line" aria-hidden="true"></span>
-          <span>03 <strong>Разбор</strong></span>
-        </div>
-      </div>
-
+          <span class="brand-copy"><strong>Кассовый<br /> контроль</strong><small>Анализ видеозаписей</small></span>
+        </a>
+        <div class="nav-caption">Рабочее пространство</div>
+        <nav class="app-nav" aria-label="Основная навигация">
+          <a href="#checks" data-nav="checks" aria-current="page"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Журнал проверок</span></a>
+          <a href="#new" data-nav="new"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Новая проверка</span></a>
+          <a href="#rules" data-nav="rules"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Zm0 0v15" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span>Процедуры</span></a>
+          <a href="#connection" data-nav="connection"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 8-3 4 3 4M15 8l3 4-3 4M13 6l-2 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Подключение</span></a>
+        </nav>
+        <div class="sidebar-foot"><span class="local-marker" aria-hidden="true"></span><div><strong>Локальная обработка</strong><p>Видео анализируется<br />на сервере сервиса.</p></div></div>
+      </aside>
+      <div class="app-content">
+        <header class="app-header">
+          <div class="breadcrumb"><span>Кассовые процедуры</span><span aria-hidden="true">/</span><strong id="page-location">Журнал проверок</strong></div>
+          <div class="header-actions"><span class="global-state" id="global-service-state" role="status">Нет подключения</span><a class="button button-primary" id="header-new-check" href="#new"><span aria-hidden="true">＋</span> Новая проверка</a></div>
+        </header>
+        <main class="page" id="main-content" tabindex="-1">
+          <section id="view-checks" data-view="checks" aria-labelledby="checks-title">
+            <div class="page-heading"><div><p class="section-kicker">Видеоконтроль</p><h1 id="checks-title">Журнал проверок</h1><p class="page-description">Записи, результаты анализа и найденные события в одном рабочем пространстве.</p></div></div>
+            <div class="stat-grid" aria-label="Сводка по проверкам">
+              <div class="stat-cell"><span>Всего проверок</span><strong id="stat-total">—</strong></div>
+              <div class="stat-cell"><span>В обработке</span><strong id="stat-processing">—</strong></div>
+              <div class="stat-cell"><span>С событиями</span><strong id="stat-violation">—</strong></div>
+              <div class="stat-cell"><span>Завершено</span><strong id="stat-done">—</strong></div>
+            </div>
+            <section class="service-panel journal-panel" aria-label="Список проверок">
+              <div class="table-toolbar">
+                <div class="search-field"><label for="history-search">Поиск по названию</label><input id="history-search" type="search" class="text-input" placeholder="Название видеозаписи…" autocomplete="off" /></div>
+                <div class="filter-field"><label for="history-status">Состояние</label><select id="history-status"><option value="all">Все состояния</option><option value="processing">В обработке</option><option value="done">Завершено</option><option value="failed">Ошибка</option></select></div>
+                <div class="filter-field"><label for="history-verdict">Результат</label><select id="history-verdict"><option value="all">Все результаты</option><option value="violation">Есть события</option><option value="no_violation">Без нарушений</option></select></div>
+                <button class="button button-secondary toolbar-refresh" id="history-refresh" type="button">Обновить</button>
+              </div>
+              <p class="notice table-feedback" id="history-feedback" role="status" hidden></p>
+              <div class="locked-state" id="history-locked"><span class="empty-state-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><rect x="7" y="13" width="18" height="14" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M11 13V9a5 5 0 0 1 10 0v4M16 19v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><h2>Подключитесь к рабочему пространству</h2><p>Введите ключ доступа, чтобы увидеть сохранённые проверки и открыть результаты.</p><a class="button button-primary" href="#connection">Подключить сервис <span aria-hidden="true">→</span></a></div>
+              <div class="table-scroll" tabindex="0" role="region" aria-label="Таблица проверок"><table class="history-table"><thead><tr><th scope="col">Запись</th><th scope="col">Создана</th><th scope="col">Состояние</th><th scope="col">События</th><th scope="col"><span class="visually-hidden">Открыть проверку</span></th></tr></thead><tbody id="history-body"></tbody></table></div>
+              <div class="empty-state" id="history-empty" hidden><span class="empty-state-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 5h16v22H8zM12 11h8M12 16h8M12 21h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span><h2>Проверок пока нет</h2><p>Загрузите видеозапись. После анализа она появится здесь вместе с результатом и найденными событиями.</p><a class="button button-primary" href="#new">Создать проверку <span aria-hidden="true">→</span></a></div>
+              <div class="table-pagination"><span id="history-range">Нет данных</span><div><button class="button button-secondary" id="history-prev" type="button" disabled>← Назад</button><button class="button button-secondary" id="history-next" type="button" disabled>Далее →</button></div></div>
+            </section>
+            <p class="page-footnote">Журнал хранится на сервере. Доступ к записям и результатам защищён ключом сервиса.</p>
+          </section>
+          <section id="view-analysis" data-view="analysis" aria-labelledby="analysis-title" hidden>
+            <div class="page-heading"><div><p class="section-kicker">Анализ видеозаписи</p><h1 id="analysis-title">Новая проверка</h1><p class="page-description">Загрузите запись кассовой операции. Результат включает события, таймкоды, исходные кадры и нормативные источники.</p></div><a class="text-button" href="#checks">← К журналу</a></div>
       <div class="workspace">
         <section class="intake" aria-labelledby="upload-title">
           <div class="section-heading">
             <span class="section-index">01</span>
             <div>
               <h2 id="upload-title">Исходная запись</h2>
-              <p>Файл и доступ к проверке</p>
+              <p>Выберите видеозапись для анализа</p>
             </div>
           </div>
 
@@ -66,19 +85,7 @@
               </label>
             </div>
 
-            <div class="field-group key-group">
-              <label class="field-label" for="api-key">Ключ доступа</label>
-              <div class="key-control">
-                <input id="api-key" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="Введите ключ доступа…" aria-describedby="key-help form-error" required />
-                <button class="key-visibility" id="key-visibility" type="button" aria-label="Показать ключ" aria-pressed="false">Показать</button>
-              </div>
-              <p class="field-help" id="key-help">Ключ нужен для запроса к API и не сохраняется в браузере.</p>
-              <div class="connection-row">
-                <button class="text-button" id="check-service" type="button">Проверить сервис</button>
-                <span class="connection-state" id="connection-state" role="status">Не проверен</span>
-              </div>
-              <p class="field-help" id="service-note" hidden></p>
-            </div>
+            <p class="access-note" id="intake-access-note">Для запуска проверки <a href="#connection">подключитесь к сервису</a>.</p>
 
             <p class="form-error" id="form-error" role="alert" tabindex="-1" hidden></p>
             <button class="primary-button" id="submit-button" type="submit">
@@ -92,7 +99,7 @@
             <label class="field-label" for="resume-job">Номер задачи</label>
             <input class="text-input mono" id="resume-job" name="job_id" autocomplete="off" spellcheck="false" placeholder="UUID из ответа API…" />
             <button class="secondary-button" id="resume-button" type="button">Открыть задачу</button>
-            <p class="field-help">Используется ключ доступа из поля выше. Видео и результат доступны, пока хранятся на сервере.</p>
+            <p class="field-help">Используется ключ из раздела «Подключение». Видео и результат доступны, пока хранятся на сервере.</p>
           </details>
 
           <div class="intake-note">
@@ -111,7 +118,7 @@
                 <p>Статус задачи и результаты</p>
               </div>
             </div>
-            <span class="workspace-label">РАБОЧАЯ ОБЛАСТЬ</span>
+            <span class="workspace-label">ВИДЕО И СОБЫТИЯ</span>
           </div>
 
           <section class="source-panel" id="source-panel" aria-label="Исходное видео" hidden>
@@ -168,7 +175,7 @@
                 <h2 id="results-title" tabindex="-1">Найденные эпизоды</h2>
                 <p id="results-summary"></p>
               </div>
-              <div class="result-actions"><span class="verdict-badge" id="verdict-badge"></span><a class="text-button" id="export-result" download>Скачать JSON</a><button class="text-button" id="copy-result" type="button">Скопировать JSON</button></div>
+              <div class="result-actions"><span class="verdict-badge" id="verdict-badge"></span><a class="text-button" id="export-result" download>Скачать JSON</a><button class="text-button" id="copy-result" type="button">Скопировать JSON</button><button class="text-button" id="print-result" type="button">Печать отчёта</button></div>
             </div>
             <p class="scope-note" id="analysis-scope" hidden></p>
             <details class="json-inspector" id="json-inspector" hidden>
@@ -193,12 +200,40 @@
           </section>
         </section>
       </div>
-    </main>
 
-    <footer class="footer">
-      <span>Кассовый контроль · прототип</span>
-      <span>Результат автоматической проверки требует подтверждения по исходной записи.</span>
-    </footer>
+          </section>
+          <section id="view-rules" data-view="rules" aria-labelledby="rules-title" hidden>
+            <div class="page-heading"><div><p class="section-kicker">Каталог правил</p><h1 id="rules-title">Процедуры проверки</h1><p class="page-description">Перечень процедур, условия их применения и нормативные источники, используемые при анализе.</p></div></div>
+            <p class="notice" id="rules-feedback" role="status" hidden></p>
+            <div class="locked-state service-panel" id="rules-locked"><span class="empty-state-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M16 7c-4-3-8-3-12-2v21c4-1 8-1 12 2 4-3 8-3 12-2V5c-4-1-8-1-12 2Zm0 0v21" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span><h2>Каталог доступен после подключения</h2><p>Подключитесь к сервису, чтобы увидеть актуальные процедуры и их состояние.</p><a class="button button-primary" href="#connection">Подключить сервис <span aria-hidden="true">→</span></a></div>
+            <div class="rules-summary" id="rules-summary" hidden></div>
+            <div class="rules-list" id="rules-list"></div>
+          </section>
+          <section id="view-connection" data-view="connection" aria-labelledby="connection-title" hidden>
+            <div class="page-heading"><div><p class="section-kicker">Доступ и состояние</p><h1 id="connection-title">Подключение к сервису</h1><p class="page-description">Настройте доступ к проверкам и посмотрите, готов ли сервис к обработке видеозаписей.</p></div></div>
+            <div class="connection-layout"><section class="service-panel connection-panel" aria-labelledby="access-title"><div class="panel-heading"><span class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="8" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/><path d="m11 11 9 9m-3-3 3-3m-6 0 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span><div><h2 id="access-title">Ключ доступа</h2><p>Для загрузки видео и просмотра результатов</p></div></div>
+<div class="field-group key-group">
+              <label class="field-label" for="api-key">Ключ доступа</label>
+              <div class="key-control">
+                <input id="api-key" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="Введите ключ доступа…" aria-describedby="key-help form-error" required />
+                <button class="key-visibility" id="key-visibility" type="button" aria-label="Показать ключ" aria-pressed="false">Показать</button>
+              </div>
+              <p class="field-help" id="key-help">Ключ нужен для запроса к API и не сохраняется в браузере.</p>
+              <div class="connection-row">
+                <button class="text-button" id="check-service" type="button">Проверить сервис</button>
+                <span class="connection-state" id="connection-state" role="status">Не проверен</span>
+              </div>
+              <p class="field-help" id="service-note" hidden></p>
+            </div>
+              <p class="notice" id="connection-feedback" role="status" hidden></p>
+              <button class="text-button quiet-button" id="forget-key" type="button">Сбросить ключ доступа</button>
+            </section><section class="service-panel system-panel" aria-labelledby="system-title"><div class="panel-heading"><span class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="14" width="18" height="6" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M7 7.5h.1M7 17h.1M17 7.5h1M17 17h1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span><div><h2 id="system-title">Состояние сервиса</h2><p>Готовность обработки и ограничения</p></div></div><div id="system-details"><p class="muted-copy">Проверьте подключение, чтобы получить сведения о сервисе.</p></div></section></div>
+            <section class="usage-guide" aria-labelledby="guide-title"><div class="guide-heading"><h2 id="guide-title">Как работать с сервисом</h2><a class="text-button" href="/docs" target="_blank" rel="noreferrer">Документация API <span aria-hidden="true">↗</span></a></div><ol><li><span>01</span><div><h3>Подключите доступ</h3><p>Введите ключ, предоставленный администратором, и проверьте состояние сервиса.</p></div></li><li><span>02</span><div><h3>Загрузите запись</h3><p>Откройте новую проверку, выберите файл MOV и запустите анализ.</p></div></li><li><span>03</span><div><h3>Изучите результат</h3><p>Откройте событие, проверьте кадры и перейдите к нужному моменту видео.</p></div></li></ol></section>
+          </section>
+        </main>
+        <footer class="footer"><span>Кассовый контроль</span><span>Проверяйте выводы по исходной записи.</span></footer>
+      </div>
+    </div>
     <span class="visually-hidden" id="result-announcement" aria-live="polite"></span>
     <dialog class="evidence-dialog" id="evidence-dialog" aria-labelledby="evidence-dialog-title">
       <div class="dialog-heading">

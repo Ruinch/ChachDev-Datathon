@@ -142,7 +142,7 @@ def test_openapi_declares_api_key_and_complete_job_schemas(tmp_path):
             "type": "apiKey", "description": "Use the jury or local server API key. All /api/v1 endpoints require this header.",
             "in": "header", "name": "X-API-Key",
         }
-        for path, method in (("/api/v1/system", "get"), ("/api/v1/analyze", "post"), ("/api/v1/jobs/{job_id}", "get"), ("/api/v1/jobs/{job_id}/video", "get")):
+        for path, method in (("/api/v1/system", "get"), ("/api/v1/rules", "get"), ("/api/v1/jobs", "get"), ("/api/v1/analyze", "post"), ("/api/v1/jobs/{job_id}", "get"), ("/api/v1/jobs/{job_id}/video", "get")):
             assert specification["paths"][path][method]["security"] == [{"ApiKeyAuth": []}]
         accepted = specification["paths"]["/api/v1/analyze"]["post"]["responses"]["202"]["content"]["application/json"]["schema"]
         assert accepted["$ref"].endswith("/ProcessingJobResponse")
