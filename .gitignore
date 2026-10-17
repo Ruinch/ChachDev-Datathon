@@ -23,3 +23,7 @@ __pycache__/
 *.pt
 *.pth
 *.onnx
+
+# Private ML runtime, annotations, predictions and local review artifacts.
+.local_ml/
+*.gguf
