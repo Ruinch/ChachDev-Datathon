@@ -5,11 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#182a38" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="description" content="Локальная проверка видеозаписей кассовых процедур с таймкодами, кадрами и ссылками на правила." />
     <title>Новая проверка · Кассовый контроль</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/styles.css" />
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js" type="module"></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Перейти к проверке</a>
@@ -71,6 +73,11 @@
                 <button class="key-visibility" id="key-visibility" type="button" aria-label="Показать ключ" aria-pressed="false">Показать</button>
               </div>
               <p class="field-help" id="key-help">Ключ нужен для запроса к API и не сохраняется в браузере.</p>
+              <div class="connection-row">
+                <button class="text-button" id="check-service" type="button">Проверить сервис</button>
+                <span class="connection-state" id="connection-state" role="status">Не проверен</span>
+              </div>
+              <p class="field-help" id="service-note" hidden></p>
             </div>
 
             <p class="form-error" id="form-error" role="alert" tabindex="-1" hidden></p>
@@ -80,10 +87,19 @@
             </button>
           </form>
 
+          <details class="resume-panel" id="resume-panel">
+            <summary>Открыть существующую проверку</summary>
+            <label class="field-label" for="resume-job">Номер задачи</label>
+            <input class="text-input mono" id="resume-job" name="job_id" autocomplete="off" spellcheck="false" placeholder="UUID из ответа API…" />
+            <button class="secondary-button" id="resume-button" type="button">Открыть задачу</button>
+            <p class="field-help">Используется ключ доступа из поля выше. Видео и результат доступны, пока хранятся на сервере.</p>
+          </details>
+
           <div class="intake-note">
             <span class="note-rule" aria-hidden="true"></span>
             <p>Сохраняйте исходное видео: каждый вывод нужно сверить с записью вручную.</p>
           </div>
+
         </section>
 
         <section class="inspection" aria-labelledby="status-title">
@@ -97,6 +113,23 @@
             </div>
             <span class="workspace-label">РАБОЧАЯ ОБЛАСТЬ</span>
           </div>
+
+          <section class="source-panel" id="source-panel" aria-label="Исходное видео" hidden>
+            <div class="source-heading">
+              <div class="source-heading-copy"><span class="overline">ИСХОДНОЕ ВИДЕО</span><p id="source-name"></p></div>
+              <div class="source-actions">
+                <a class="text-button" id="download-video" hidden>Скачать</a>
+                <button class="text-button" id="toggle-video" type="button" aria-expanded="true" aria-controls="source-body">Свернуть</button>
+              </div>
+            </div>
+            <div id="source-body">
+              <div class="video-stage" id="video-stage" hidden>
+                <video id="source-video" controls playsinline muted preload="metadata" tabindex="0" aria-label="Просмотр исходной видеозаписи"></video>
+              </div>
+              <button class="secondary-button" id="load-source" type="button" hidden>Загрузить исходное видео для просмотра</button>
+              <p class="source-note" id="source-note" role="status"></p>
+            </div>
+          </section>
 
           <div class="status-empty" id="status-empty">
             <div class="empty-symbol" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -121,7 +154,10 @@
             <dl class="status-details">
               <div><dt>Запись</dt><dd id="status-file"></dd></div>
               <div><dt>Номер задачи</dt><dd class="mono" id="status-job"></dd></div>
+              <div id="elapsed-row" hidden><dt>Время проверки</dt><dd class="mono" id="status-elapsed"></dd></div>
             </dl>
+            <button class="text-button copy-job" id="copy-job" type="button" hidden>Скопировать ссылку на проверку</button>
+            <input class="text-input" id="job-link" aria-label="Ссылка на текущую проверку" readonly hidden />
             <button class="secondary-button" id="retry-button" type="button" hidden>Проверить статус снова</button>
           </div>
 
@@ -132,8 +168,14 @@
                 <h2 id="results-title" tabindex="-1">Найденные эпизоды</h2>
                 <p id="results-summary"></p>
               </div>
-              <span class="verdict-badge" id="verdict-badge"></span>
+              <div class="result-actions"><span class="verdict-badge" id="verdict-badge"></span><a class="text-button" id="export-result" download>Скачать JSON</a><button class="text-button" id="copy-result" type="button">Скопировать JSON</button></div>
             </div>
+            <p class="scope-note" id="analysis-scope" hidden></p>
+            <details class="json-inspector" id="json-inspector" hidden>
+              <summary>Ответ API · JSON</summary>
+              <label class="field-label" for="result-json">Скопируйте результат из поля ниже</label>
+              <textarea class="text-input mono" id="result-json" readonly spellcheck="false"></textarea>
+            </details>
             <div class="no-events" id="no-events" hidden>
               <div class="no-events-icon" aria-hidden="true">✓</div>
               <div>
@@ -158,5 +200,16 @@
       <span>Результат автоматической проверки требует подтверждения по исходной записи.</span>
     </footer>
     <span class="visually-hidden" id="result-announcement" aria-live="polite"></span>
+    <dialog class="evidence-dialog" id="evidence-dialog" aria-labelledby="evidence-dialog-title">
+      <div class="dialog-heading">
+        <div><span class="overline">КАДР ИЗ ИСХОДНОГО ВИДЕО</span><h2 id="evidence-dialog-title"></h2></div>
+        <button class="secondary-button" id="close-evidence" type="button" autofocus>Закрыть <span aria-hidden="true">×</span></button>
+      </div>
+      <div class="dialog-stage"><img id="dialog-image" width="464" height="848" alt="" /><p id="dialog-error" hidden>Кадр не удалось показать.</p></div>
+      <div class="dialog-footer">
+        <div class="dialog-navigation"><button class="secondary-button" id="previous-frame" type="button">← Предыдущий</button><span id="frame-count" class="mono"></span><button class="secondary-button" id="next-frame" type="button">Следующий →</button></div>
+        <a class="text-button" id="download-frame">Скачать JPEG</a>
+      </div>
+    </dialog>
   </body>
 </html>

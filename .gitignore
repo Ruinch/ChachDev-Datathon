@@ -7,6 +7,8 @@ data/
 .env.*
 !.env.example
 .venv/
+.local_tools/
+*.egg-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/

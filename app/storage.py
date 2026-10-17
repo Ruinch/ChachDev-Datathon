@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -17,6 +18,33 @@ class JobStore:
         self.data_dir = data_dir.resolve()
         self.jobs_dir = self.data_dir / "jobs"
         self.db_path = self.data_dir / "jobs.sqlite3"
+        self._server_lock = None
+
+    def acquire_server_lock(self) -> None:
+        """The data directory and local GPU belong to one API process at a time."""
+        lock = (self.data_dir / ".server.lock").open("a+b")
+        try:
+            if lock.seek(0, 2) == 0:
+                lock.write(b"0")
+                lock.flush()
+            lock.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            lock.close()
+            raise RuntimeError("This APP_DATA_DIR is already used by another API process; run one Uvicorn worker") from exc
+        self._server_lock = lock
+
+    def release_server_lock(self) -> None:
+        if self._server_lock is not None:
+            self._server_lock.close()
+            self._server_lock = None
 
     def initialize(self) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -31,11 +59,15 @@ class JobStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     result_json TEXT,
+                    metadata_json TEXT,
                     error_code TEXT,
                     error_message TEXT
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+            if "metadata_json" not in columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN metadata_json TEXT")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -50,13 +82,13 @@ class JobStore:
         finally:
             conn.close()
 
-    def create(self, job_id: str, filename: str) -> str:
+    def create(self, job_id: str, filename: str, metadata: dict | None = None) -> str:
         created_at = utc_now()
         with self._connection() as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, status, filename, created_at, updated_at) "
-                "VALUES (?, 'processing', ?, ?, ?)",
-                (job_id, filename, created_at, created_at),
+                "INSERT INTO jobs (job_id, status, filename, created_at, updated_at, metadata_json) "
+                "VALUES (?, 'processing', ?, ?, ?, ?)",
+                (job_id, filename, created_at, created_at, json.dumps(metadata or {})),
             )
         return created_at
 
@@ -70,6 +102,13 @@ class JobStore:
         record = dict(row)
         raw_result = record.pop("result_json")
         record["result"] = json.loads(raw_result) if raw_result else None
+        raw_metadata = record.pop("metadata_json", None)
+        record["metadata"] = {
+            **(json.loads(raw_metadata) if raw_metadata else {}),
+            "filename": record["filename"],
+            "created_at": record["created_at"],
+            "updated_at": record["updated_at"],
+        }
         return record
 
     def set_done(self, job_id: str, result: dict) -> None:

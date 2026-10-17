@@ -1,15 +1,59 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
+import math
 import subprocess
 from pathlib import Path
 
-from app.analyzer import LocalAnalysisResult
-from app.schemas import DoneResponse, EvidenceFrame, Violation
+from PIL import Image, UnidentifiedImageError
+
+from app.analyzer import AnalysisContractError, InsufficientEvidenceError, LocalAnalysisResult
+from app.rules import RuleCatalog, load_rule_catalog
+from app.schemas import AnalysisScope, DoneResponse, EvidenceFrame, Violation
 
 
 class EvidenceExtractionError(RuntimeError):
-    pass
+    code = "evidence_extraction_failed"
+
+
+def _validate_timestamp(timestamp: float, video_duration_sec: float) -> None:
+    if not math.isfinite(timestamp) or not 0 <= timestamp < video_duration_sec:
+        raise AnalysisContractError("An event or evidence timestamp is outside the source video")
+
+
+def validate_analysis_result(
+    result: LocalAnalysisResult,
+    video_duration_sec: float,
+    rule_catalog: RuleCatalog,
+) -> None:
+    """Require supported observations; accepting an all-clear also needs full coverage."""
+    if not math.isfinite(video_duration_sec) or video_duration_sec <= 0:
+        raise AnalysisContractError("The source video must have a finite positive duration")
+    enabled_ids = set(rule_catalog.enabled_rule_ids)
+    if not enabled_ids:
+        raise InsufficientEvidenceError("No verified visual rules are enabled for analysis")
+    for rule_id in result.checked_rule_ids:
+        rule_catalog.require_enabled(rule_id)
+    if result.verdict == "no_violation" and not _full_video_checked(result, rule_catalog):
+        raise InsufficientEvidenceError(
+            "The analyzer could not completely check the video against every enabled rule"
+        )
+    for detected in result.violations:
+        rule_catalog.require_enabled(detected.rule_id)
+        if detected.rule_id not in result.checked_rule_ids:
+            raise AnalysisContractError("An event references a rule the analyzer did not check")
+        _validate_timestamp(detected.timecode_sec, video_duration_sec)
+        for timestamp in detected.evidence_timestamps_sec:
+            _validate_timestamp(timestamp, video_duration_sec)
+
+
+def _full_video_checked(result: LocalAnalysisResult, rule_catalog: RuleCatalog) -> bool:
+    return (
+        result.analysis_complete
+        and set(result.checked_rule_ids) == set(rule_catalog.enabled_rule_ids)
+        and not result.limitations
+    )
 
 
 def extract_jpeg(video_path: Path, timestamp_sec: float, output_path: Path, ffmpeg_bin: str) -> bytes:
@@ -23,8 +67,15 @@ def extract_jpeg(video_path: Path, timestamp_sec: float, output_path: Path, ffmp
         "-nostdin",
         "-ss",
         str(timestamp_sec),
+        "-protocol_whitelist",
+        "file,pipe",
         "-i",
         str(video_path),
+        "-map",
+        "0:V:0",
+        "-an",
+        "-sn",
+        "-dn",
         "-frames:v",
         "1",
         "-vf",
@@ -43,8 +94,13 @@ def extract_jpeg(video_path: Path, timestamp_sec: float, output_path: Path, ffmp
         frame = output_path.read_bytes()
     except OSError as exc:
         raise EvidenceExtractionError("FFmpeg did not write an evidence frame") from exc
-    if len(frame) < 4 or not (frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9")):
-        raise EvidenceExtractionError("Evidence frame is not a valid JPEG")
+    try:
+        with Image.open(BytesIO(frame)) as image:
+            if image.format != "JPEG" or not (0 < image.width <= 960 and 0 < image.height <= 960):
+                raise EvidenceExtractionError("Evidence frame must be a JPEG no larger than 960 pixels per side")
+            image.load()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise EvidenceExtractionError("Evidence frame is not a decodable JPEG") from exc
     return frame
 
 
@@ -54,9 +110,14 @@ def materialize_result(
     evidence_dir: Path,
     result: LocalAnalysisResult,
     ffmpeg_bin: str,
+    video_duration_sec: float,
+    rule_catalog: RuleCatalog | None = None,
 ) -> DoneResponse:
+    rule_catalog = rule_catalog or load_rule_catalog()
+    validate_analysis_result(result, video_duration_sec, rule_catalog)
     violations: list[Violation] = []
     for violation_index, detected in enumerate(result.violations):
+        rule = rule_catalog.require_enabled(detected.rule_id)
         frames: list[EvidenceFrame] = []
         for frame_index, timestamp in enumerate(detected.evidence_timestamps_sec):
             frame_path = evidence_dir / f"v{violation_index}_f{frame_index}.jpg"
@@ -69,13 +130,21 @@ def materialize_result(
             )
         violations.append(
             Violation(
-                type=detected.type,
+                type=rule.event_type,
                 timecode_sec=detected.timecode_sec,
                 description=detected.description,
                 evidence_frames=frames,
-                rule=detected.rule,
+                rule=rule.reference,
             )
         )
     return DoneResponse(
-        job_id=job_id, verdict=result.verdict, violations=violations
+        job_id=job_id,
+        verdict=result.verdict,
+        violations=violations,
+        analysis_scope=AnalysisScope(
+            full_video_checked=_full_video_checked(result, rule_catalog),
+            checked_rule_ids=result.checked_rule_ids,
+            enabled_rule_ids=list(rule_catalog.enabled_rule_ids),
+            limitations=result.limitations,
+        ),
     )
