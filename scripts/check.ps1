@@ -7,6 +7,7 @@ Checks the project environment and optionally a running API and unit tests.
 [CmdletBinding()]
 param(
     [string]$BaseUrl,
+    [string]$EnvPath,
     [switch]$RequireAnalyzer,
     [switch]$AllowMissingMediaTools,
     [switch]$RunTests
@@ -15,18 +16,17 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
-Import-ProjectEnvironment -Path (Join-Path $projectRoot '.env')
+$null = Initialize-ProjectEnvironment -ProjectRoot $projectRoot -EnvPath $EnvPath
 $pythonPath = Get-ProjectPython -ProjectRoot $projectRoot
 
 if ([string]::IsNullOrWhiteSpace($env:APP_API_KEY)) {
-    throw 'APP_API_KEY is missing. Set it in .env or the process environment; see .env.example.'
+    throw 'APP_API_KEY is missing. Run scripts/setup.ps1 first, or set a key in your existing .env.'
 }
 
 Push-Location -LiteralPath $projectRoot
 try {
-    & $pythonPath -c 'import fastapi, uvicorn, multipart, PIL; from app.config import Settings; from app.main import create_app; Settings.from_env().validate()'
-    if ($LASTEXITCODE -ne 0) { throw 'Python dependencies or application settings are invalid.' }
-    Write-Host 'Python, application settings and five-minute timeout budget: OK'
+    Assert-ProjectDependencies -PythonPath $pythonPath -ProjectRoot $projectRoot
+    Write-Host 'Python 3.13, pinned service dependencies, application settings and five-minute timeout budget: OK'
 
     $ffmpegPath = if ($env:APP_FFMPEG_BIN) { $env:APP_FFMPEG_BIN } else { 'ffmpeg' }
     $ffprobePath = if ($env:APP_FFPROBE_BIN) { $env:APP_FFPROBE_BIN } else { 'ffprobe' }
@@ -66,8 +66,18 @@ try {
     }
 
     if ($RunTests) {
+        $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $node) { throw 'Node.js 22 or newer is needed for -RunTests frontend checks. Normal server startup does not require Node.js.' }
+        $nodeMajor = & $node.Source -p 'parseInt(process.versions.node)'
+        if ($LASTEXITCODE -ne 0 -or [int]$nodeMajor -lt 22) { throw 'Frontend tests require Node.js 22 or newer. Normal server startup does not require Node.js.' }
+        $frontendTests = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'tests\frontend') -Filter '*.test.mjs' -File | ForEach-Object { $_.FullName })
+        if ($frontendTests.Count -eq 0) { throw 'Frontend test files are missing.' }
         & $pythonPath -m pytest -q
         if ($LASTEXITCODE -ne 0) { throw 'Project tests failed.' }
+        & $node.Source --test @frontendTests
+        if ($LASTEXITCODE -ne 0) { throw 'Frontend tests failed.' }
+        & (Join-Path $PSScriptRoot 'test-launchers.ps1')
+        Write-Host 'Service, frontend and launcher checks: OK'
     }
 }
 finally { Pop-Location }

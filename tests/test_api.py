@@ -399,3 +399,127 @@ def test_second_api_process_cannot_take_over_active_data_directory(tmp_path):
     # Releasing the server lock permits a normal subsequent launch.
     with TestClient(create_app(settings)) as restarted:
         assert restarted.get("/api/v1/system", headers=HEADERS).status_code == 200
+
+
+@pytest.mark.parametrize("failure_at", ["directory", "file", "database"])
+def test_storage_failures_return_507_and_leave_no_upload_or_busy_slot(ready_settings, monkeypatch, failure_at):
+    app = create_app(ready_settings, analyzer=CheckedAnalyzer(), probe=successful_probe)
+    with TestClient(app) as client:
+        if failure_at == "database":
+            import sqlite3
+
+            with sqlite3.connect(app.state.store.db_path) as database:
+                database.execute("""CREATE TRIGGER unavailable_storage BEFORE INSERT ON jobs
+                    BEGIN SELECT RAISE(FAIL, 'Synthetic database write failure'); END""")
+        original_mkdir, original_open = Path.mkdir, Path.open
+
+        def mkdir(path, *args, **kwargs):
+            if failure_at == "directory" and path.parent == app.state.store.jobs_dir:
+                raise PermissionError("Synthetic unavailable disk")
+            return original_mkdir(path, *args, **kwargs)
+
+        def open_file(path, *args, **kwargs):
+            if failure_at == "file" and path.name == "input.mov":
+                raise OSError("Synthetic full disk")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+        monkeypatch.setattr(Path, "open", open_file)
+        response = upload(client)
+        assert response.status_code == 507
+        assert response.json()["detail"] == {
+            "code": "storage_unavailable", "message": "The video could not be stored on the local server",
+        }
+        assert client.get("/api/v1/system", headers=HEADERS).json()["busy"] is False
+        assert client.get("/api/v1/jobs", headers=HEADERS).json()["total"] == 0
+        assert list(app.state.store.jobs_dir.iterdir()) == []
+        assert client.post("/api/v1/analyze", headers=HEADERS).status_code == 422
+
+
+@pytest.mark.parametrize("cancellation_count", [0, 1, 2])
+def test_slow_local_file_write_keeps_other_http_requests_responsive(ready_settings, monkeypatch, cancellation_count):
+    import threading
+    from httpx import ASGITransport, AsyncClient
+
+    app = create_app(ready_settings, analyzer=CheckedAnalyzer(), probe=successful_probe)
+    writing, release_write = threading.Event(), threading.Event()
+    original_open = Path.open
+
+    class SlowTarget:
+        def __init__(self, target):
+            self.target = target
+
+        def __enter__(self):
+            self.target.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.target.__exit__(*args)
+
+        def write(self, chunk):
+            writing.set()
+            assert release_write.wait(timeout=5), "Concurrent request did not finish while the write was blocked"
+            return self.target.write(chunk)
+
+    def open_file(path, *args, **kwargs):
+        target = original_open(path, *args, **kwargs)
+        return SlowTarget(target) if path.name == "input.mov" and args == ("xb",) else target
+
+    monkeypatch.setattr(Path, "open", open_file)
+
+    async def run():
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+                posting = asyncio.create_task(client.post(
+                    "/api/v1/analyze", headers=HEADERS, files={"file": ("sample.mov", VIDEO_BYTES)},
+                ))
+                try:
+                    assert await asyncio.to_thread(writing.wait, 3)
+                    for _ in range(cancellation_count):
+                        posting.cancel()
+                        await asyncio.sleep(0)
+                        status = await asyncio.wait_for(client.get("/api/v1/system", headers=HEADERS), timeout=1)
+                        assert status.json()["busy"] is True
+                        competing = await client.post("/api/v1/analyze", headers=HEADERS)
+                        assert competing.status_code == 429
+                        assert not posting.done()
+                    status = await asyncio.wait_for(client.get("/api/v1/system", headers=HEADERS), timeout=1)
+                    assert status.status_code == 200
+                    assert status.json()["busy"] is True
+                    assert not posting.done()
+                finally:
+                    release_write.set()
+                if cancellation_count:
+                    with pytest.raises(asyncio.CancelledError):
+                        await posting
+                    # A completely received video finishes admission even if its
+                    # HTTP caller leaves; it remains discoverable in history.
+                    history = (await client.get("/api/v1/jobs", headers=HEADERS)).json()
+                    assert history["total"] == 1
+                    job_id = history["items"][0]["job_id"]
+                else:
+                    accepted = await posting
+                    assert accepted.status_code == 202
+                    job_id = accepted.json()["job_id"]
+                # A persisted processing row alone is insufficient: the runner
+                # must have received the job and reached its observable result.
+                deadline = time.monotonic() + 12
+                while True:
+                    result = (await client.get(f"/api/v1/jobs/{job_id}", headers=HEADERS)).json()
+                    if result["status"] != "processing":
+                        break
+                    assert time.monotonic() < deadline, "The saved video was never handed to the runner"
+                    await asyncio.sleep(0.05)
+                assert result["status"] == "done"
+                assert result["verdict"] == "no_violation"
+                assert (await client.get(f"/api/v1/jobs/{job_id}/video", headers=HEADERS)).content == VIDEO_BYTES
+
+    asyncio.run(run())
+
+
+def test_rejected_api_requests_are_not_cacheable(tmp_path):
+    with TestClient(create_app(Settings(api_key=API_KEY, data_dir=tmp_path))) as client:
+        response = client.get("/api/v1/jobs")
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["x-content-type-options"] == "nosniff"

@@ -1,4 +1,4 @@
-import { getSystem, getJob, startAnalysis, getSource } from "./api.js";
+import { WorkspaceSession } from "./session.js";
 import { SourcePlayer, EvidenceViewer, formatTime, formatSize, validFrame, createJsonDownload } from "./media.js";
 import { ServiceWorkspace } from "./service.js";
 
@@ -17,22 +17,13 @@ const eventIndex = byId("event-index");
 const eventDetail = byId("event-detail");
 const player = new SourcePlayer();
 const viewer = new EvidenceViewer();
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-let activeJobId = null;
-let activeKey = null;
-let activeMetadata = {};
-let activeFilename = "";
+const session = new WorkspaceSession();
 let currentEvents = [];
 let currentResult = null;
-let pollTimer = null;
 let elapsedTimer = null;
 let startedAt = null;
-let runNumber = 0;
-let locked = false;
-let sourceRequest = null;
 let resultDownloadUrl = null;
-let workspace = null;
+const filename = () => session.state.job?.metadata?.filename || session.state.selectedFile?.name || "";
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -44,11 +35,10 @@ function element(tag, className, text) {
 function setError(message, focusTarget = formError) {
   formError.textContent = message;
   formError.hidden = !message;
-  if (message) focusTarget.focus();
+  if (message && focusTarget) focusTarget.focus();
 }
 
 function setLocked(value) {
-  locked = value;
   fileInput.disabled = value;
   keyInput.disabled = value;
   submitButton.disabled = value;
@@ -58,40 +48,10 @@ function setLocked(value) {
   dropzone.dataset.locked = String(value);
   dropzone.setAttribute("aria-disabled", String(value));
   byId("submit-label").textContent = value ? "Идёт проверка…" : "Начать проверку";
-  workspace?.updateAccess();
-}
-
-function jobLink(id) {
-  const url = new URL(location.href);
-  if (id) url.searchParams.set("job", id);
-  else url.searchParams.delete("job");
-  if (id) url.hash = "review";
-  return url;
-}
-
-function rememberJob(id) {
-  history.replaceState(null, "", jobLink(id));
-  byId("resume-job").value = id || "";
-  byId("copy-job").hidden = !id;
-  byId("job-link").hidden = true;
-  if (id) workspace?.route();
-}
-
-function resetReview() {
-  runNumber += 1;
-  clearTimeout(pollTimer);
-  clearInterval(elapsedTimer);
-  sourceRequest?.abort();
-  activeJobId = null;
-  activeKey = null;
-  activeMetadata = {};
-  startedAt = null;
-  statusContent.hidden = true;
-  clearResult();
-  rememberJob(null);
 }
 
 function clearResult() {
+  viewer.close();
   resultsPanel.hidden = true;
   byId("events-layout").hidden = true;
   byId("no-events").hidden = true;
@@ -109,16 +69,7 @@ function clearResult() {
 }
 
 function chooseFile(file) {
-  if (locked) return;
-  resetReview();
-  activeFilename = file?.name || "";
-  dropzone.dataset.selected = String(Boolean(file));
-  byId("file-label").textContent = file ? file.name : "Выбрать видео";
-  byId("file-hint").textContent = file ? formatSize(file.size) + " · нажмите, чтобы заменить" : "или перетащить файл сюда";
-  statusEmpty.hidden = Boolean(file);
-  if (file) player.setBlob(file, file.name);
-  else player.clear();
-  setError("");
+  if (session.selectFile(file)) setError("");
 }
 
 function readinessMessage(info) {
@@ -133,34 +84,9 @@ function readinessMessage(info) {
   return names?.length ? "Проверяем: " + names.join("; ") + "." : "Сервис готов. Проверяемых правил: " + (info.analyzer?.enabled_rule_ids?.length || 0) + ".";
 }
 
-async function checkSystem(key) {
-  if (!key) throw new Error("Введите ключ доступа.");
-  const checkButton = byId("check-service");
-  checkButton.disabled = true;
-  byId("connection-state").textContent = "Проверяем…";
-  try {
-    const info = await getSystem(key);
-    if (key !== keyInput.value.trim()) return info;
-    byId("connection-state").textContent = info.ready ? info.busy ? "Занят" : "Готов" : "Не готов";
-    byId("connection-state").dataset.ready = String(info.ready && !info.busy);
-    byId("service-note").hidden = false;
-    byId("service-note").textContent = readinessMessage(info);
-    const limits = info.limits || {};
-    const limitText = ["MOV"];
-    if (limits.max_upload_bytes) limitText.push("до " + formatSize(limits.max_upload_bytes));
-    if (limits.max_video_duration_sec) limitText.push("до " + formatTime(limits.max_video_duration_sec));
-    byId("file-help").textContent = limitText.join(" · ");
-    workspace?.setConnection(info, key);
-    return info;
-  } catch (error) {
-    byId("connection-state").textContent = "Нет подключения";
-    byId("connection-state").dataset.ready = "false";
-    byId("service-note").hidden = true;
-    workspace?.feedback("connection-feedback", error.message, "error");
-    throw error;
-  } finally {
-    checkButton.disabled = locked;
-  }
+async function checkSystem() {
+  session.setKey(keyInput.value);
+  return session.connect();
 }
 
 function failureMessage(error) {
@@ -191,8 +117,9 @@ function updateElapsed(finishedAt = null) {
   byId("status-elapsed").textContent = formatTime(Math.max(0, (end - startedAt) / 1000));
 }
 
-function setStatus(status, note, metadata = activeMetadata) {
+function setStatus(status, note, metadata = session.state.job?.metadata || {}) {
   const labels = {
+    preparing: "Проверяем параметры…",
     uploading: "Загружаем видео…",
     processing: "Обрабатываем запись…",
     done: "Проверка завершена",
@@ -204,11 +131,11 @@ function setStatus(status, note, metadata = activeMetadata) {
   document.querySelector(".status-main").dataset.status = status;
   byId("status-indicator").dataset.status = status;
   byId("status-label").textContent = labels[status] || "Состояние неизвестно";
-  byId("status-file").textContent = metadata.filename || activeFilename || "—";
-  byId("status-job").textContent = activeJobId || (status === "uploading" ? "Создаётся…" : "—");
+  byId("status-file").textContent = metadata.filename || filename() || "—";
+  byId("status-job").textContent = session.state.jobId || (status === "uploading" ? "Создаётся…" : "—");
   byId("status-note").textContent = note;
   byId("retry-button").hidden = true;
-  byId("copy-job").hidden = !activeJobId;
+  byId("copy-job").hidden = !session.state.jobId;
   const serverStart = Date.parse(metadata.created_at);
   if (Number.isFinite(serverStart)) startedAt = serverStart;
   clearInterval(elapsedTimer);
@@ -222,24 +149,24 @@ function setStatus(status, note, metadata = activeMetadata) {
 
 async function ensureSource() {
   if (player.url) return true;
-  if (!activeJobId || !activeKey) return false;
-  sourceRequest?.abort();
-  sourceRequest = new AbortController();
-  const expectedRun = runNumber;
+  if (!session.state.jobId) return false;
   const button = byId("load-source");
+  const expectedJob = session.state.jobId;
   button.disabled = true;
   button.textContent = "Загружаем исходное видео…";
   try {
-    const blob = await getSource(activeJobId, activeKey, sourceRequest.signal);
-    if (expectedRun !== runNumber) return false;
-    player.setBlob(blob, activeMetadata.filename || activeFilename);
+    const blob = await session.source();
+    if (!blob || expectedJob !== session.state.jobId) return false;
+    player.setBlob(blob, filename());
     return true;
   } catch (error) {
-    if (error.name !== "AbortError" && expectedRun === runNumber) byId("source-note").textContent = error.message;
+    if (error.name !== "AbortError" && expectedJob === session.state.jobId) byId("source-note").textContent = error.message;
     return false;
   } finally {
-    button.disabled = false;
-    button.textContent = "Загрузить исходное видео для просмотра";
+    if (expectedJob === session.state.jobId) {
+      button.disabled = false;
+      button.textContent = "Загрузить исходное видео для просмотра";
+    }
   }
 }
 
@@ -318,7 +245,7 @@ function renderEventDetail(index) {
 function renderResult(result) {
   clearResult();
   currentResult = result;
-  const download = createJsonDownload(result, activeJobId);
+  const download = createJsonDownload(result, session.state.jobId);
   resultDownloadUrl = download.url;
   byId("export-result").href = download.url;
   byId("export-result").download = download.filename;
@@ -375,122 +302,46 @@ function renderResult(result) {
   if (!byId("view-analysis").hidden) resultsTitle.focus();
 }
 
-async function pollJob(expectedRun = runNumber, restoring = false) {
-  clearTimeout(pollTimer);
-  if (!activeJobId || !activeKey) return;
-  const id = activeJobId;
-  try {
-    const job = await getJob(id, activeKey);
-    if (expectedRun !== runNumber || id !== activeJobId) return;
-    activeMetadata = job.metadata || {};
-    activeFilename = activeMetadata.filename || activeFilename;
-    if (restoring && !player.url) player.setPending(activeFilename);
-    if (job.status === "processing") {
-      setLocked(true);
-      setStatus("processing", "Сервис проверяет запись. Результат появится автоматически.");
-      pollTimer = window.setTimeout(() => pollJob(expectedRun), 2000);
-    } else if (job.status === "done") {
-      setLocked(false);
-      setStatus("done", "Результат готов. Сверьте каждый эпизод с исходной записью.");
-      renderResult(job);
-      workspace?.jobUpdated();
-    } else if (job.status === "failed") {
-      setLocked(false);
-      setStatus("failed", failureMessage(job.error));
-      workspace?.jobUpdated();
-    } else throw new Error("Сервис вернул неизвестное состояние задачи.");
-  } catch (error) {
-    if (expectedRun !== runNumber || id !== activeJobId) return;
-    setLocked(false);
-    setStatus("connection", error.message + " Повторите запрос статуса.");
-    byId("retry-button").hidden = false;
-  }
-}
-
 async function restoreJob() {
-  if (locked) return;
-  const id = byId("resume-job").value.trim().toLowerCase();
-  const key = keyInput.value.trim();
-  if (!uuidPattern.test(id)) return setError("Введите полный номер задачи в формате UUID.", byId("resume-job"));
-  if (!key) {
-    workspace?.navigate("connection");
-    workspace?.feedback("connection-feedback", "Введите ключ доступа, чтобы открыть сохранённую проверку.");
+  if (session.state.busy) return;
+  session.setKey(keyInput.value);
+  const id = byId("resume-job").value.trim();
+  const opened = await session.openJob(id);
+  if (!opened && session.state.pendingJob) {
+    byId("connection-feedback").textContent = "Введите ключ доступа, чтобы открыть сохранённую проверку.";
+    byId("connection-feedback").hidden = false;
     keyInput.focus();
-    return;
   }
-  resetReview();
-  fileInput.value = "";
-  byId("file-label").textContent = "Выбрать видео";
-  byId("file-hint").textContent = "или перетащить файл сюда";
-  dropzone.dataset.selected = "false";
-  player.clear();
-  activeFilename = "";
-  activeJobId = id;
-  activeKey = key;
-  rememberJob(id);
-  setError("");
-  setLocked(true);
-  setStatus("processing", "Запрашиваем сохранённую задачу…");
-  await pollJob(runNumber, true);
 }
 
 form.addEventListener("submit", async event => {
   event.preventDefault();
-  if (locked) return;
+  if (session.state.busy) return;
   setError("");
-  const file = fileInput.files[0];
-  const key = keyInput.value.trim();
-  if (!file) return setError("Выберите видео в формате .mov.", fileInput);
-  if (!file.name.toLowerCase().endsWith(".mov")) return setError("Поддерживаются только файлы .mov.", fileInput);
-  if (file.size === 0) return setError("Файл пустой. Выберите другую запись.", fileInput);
-  if (!key) {
-    workspace?.navigate("connection");
-    workspace?.feedback("connection-feedback", "Подключитесь к сервису, затем вернитесь к выбранной записи.");
-    keyInput.focus();
-    return;
-  }
-  setLocked(true);
-  let uploadStarted = false;
-  try {
-    const info = await checkSystem(key);
-    if (!info.ready || info.busy) throw new Error(readinessMessage(info));
-    if (file.size > info.limits.max_upload_bytes) throw new Error("Файл больше " + formatSize(info.limits.max_upload_bytes) + ". Выберите запись меньшего размера.");
-    const duration = player.video.duration;
-    if (Number.isFinite(duration) && duration > info.limits.max_video_duration_sec) throw new Error("Запись длиннее допустимого лимита " + formatTime(info.limits.max_video_duration_sec) + ".");
-    resetReview();
-    activeKey = key;
-    activeFilename = file.name;
-    startedAt = Date.now();
-    uploadStarted = true;
-    setStatus("uploading", "Передаём файл сервису. Параметры видео проверит сервер.");
-    byId("submit-label").textContent = "Загружаем видео…";
-    const expectedRun = runNumber;
-    const job = await startAnalysis(file, key);
-    if (expectedRun !== runNumber) return;
-    if (!uuidPattern.test(job.job_id) || job.status !== "processing") throw new Error("Сервис не создал задачу. Повторите загрузку.");
-    activeJobId = job.job_id;
-    activeMetadata = job.metadata || {};
-    rememberJob(activeJobId);
-    setStatus("processing", "Файл загружен. Сервис проверяет запись.");
-    pollJob(expectedRun);
-  } catch (error) {
-    setLocked(false);
-    if (uploadStarted) setStatus("failed", error.message);
-    setError(error.message);
-  }
+  session.setKey(keyInput.value);
+  try { await session.start(player.video.duration); }
+  catch (error) { if (error.name !== "AbortError") setError(error.message); }
 });
 
 fileInput.addEventListener("change", () => chooseFile(fileInput.files[0]));
 keyInput.addEventListener("input", () => {
   setError("");
-  workspace?.invalidate();
-  byId("connection-state").textContent = "Не проверен";
-  byId("service-note").hidden = true;
-  byId("connection-state").removeAttribute("data-ready");
+  session.setKey(keyInput.value);
 });
 byId("check-service").addEventListener("click", async () => {
-  try { await checkSystem(keyInput.value.trim()); }
-  catch (error) { workspace?.feedback("connection-feedback", error.message, "error"); keyInput.focus(); }
+  try { await checkSystem(); }
+  catch (error) { if (error.name !== "AbortError") keyInput.focus(); }
+});
+byId("forget-key").addEventListener("click", () => {
+  if (!session.forget()) return;
+  keyInput.value = "";
+  keyInput.type = "password";
+  byId("key-visibility").textContent = "Показать";
+  byId("key-visibility").setAttribute("aria-label", "Показать ключ");
+  byId("key-visibility").setAttribute("aria-pressed", "false");
+  byId("connection-feedback").textContent = "Ключ удалён из текущей страницы. Для продолжения подключитесь заново.";
+  byId("connection-feedback").hidden = false;
+  keyInput.focus();
 });
 keyInput.addEventListener("keydown", event => {
   if (event.key === "Enter") {
@@ -507,7 +358,7 @@ byId("key-visibility").addEventListener("click", () => {
 });
 dropzone.addEventListener("dragover", event => {
   event.preventDefault();
-  if (!locked) dropzone.classList.add("is-dragover");
+  if (!session.state.busy) dropzone.classList.add("is-dragover");
 });
 dropzone.addEventListener("dragleave", event => {
   if (!dropzone.contains(event.relatedTarget)) dropzone.classList.remove("is-dragover");
@@ -515,7 +366,7 @@ dropzone.addEventListener("dragleave", event => {
 dropzone.addEventListener("drop", event => {
   event.preventDefault();
   dropzone.classList.remove("is-dragover");
-  if (locked) return;
+  if (session.state.busy) return;
   const file = event.dataTransfer?.files?.[0];
   if (!file) return;
   const transfer = new DataTransfer();
@@ -523,12 +374,7 @@ dropzone.addEventListener("drop", event => {
   fileInput.files = transfer.files;
   chooseFile(file);
 });
-byId("retry-button").addEventListener("click", () => {
-  const key = keyInput.value.trim();
-  if (!key) { workspace?.navigate("connection"); keyInput.focus(); return; }
-  activeKey = key;
-  pollJob();
-});
+byId("retry-button").addEventListener("click", () => session.refreshJob());
 byId("load-source").addEventListener("click", ensureSource);
 byId("resume-button").addEventListener("click", restoreJob);
 byId("resume-job").addEventListener("keydown", event => {
@@ -552,7 +398,7 @@ byId("copy-result").addEventListener("click", async () => {
   }
 });
 byId("copy-job").addEventListener("click", async () => {
-  const url = jobLink(activeJobId).href;
+  const url = session.jobLink();
   try {
     await navigator.clipboard.writeText(url);
     byId("copy-job").textContent = "Ссылка скопирована";
@@ -566,35 +412,64 @@ byId("copy-job").addEventListener("click", async () => {
   }
 });
 
-workspace = new ServiceWorkspace({
-  getKey: () => keyInput.value.trim(),
-  isBusy: () => locked,
-  getActiveJob: () => activeJobId,
-  onOpenJob: async id => {
-    byId("resume-job").value = id;
-    await restoreJob();
-  },
-  onNewCheck: () => {
-    if (!activeJobId && fileInput.files.length) return;
-    fileInput.value = "";
-    chooseFile(null);
-    statusEmpty.querySelector("h3").textContent = "Добавьте запись для проверки";
-    statusEmpty.querySelector("p").textContent = "После выбора файла здесь появится видео. Результат сохранится в журнале автоматически.";
-  },
-  onDisconnect: () => {
-    fileInput.value = "";
-    chooseFile(null);
-  },
+new ServiceWorkspace(session);
+session.subscribe((state, previous) => {
+  setLocked(state.busy);
+  byId("check-service").disabled = state.busy || state.connecting;
+  byId("resume-job").value = state.pendingJob || state.jobId || "";
+  byId("copy-job").hidden = !state.jobId;
+  if (state.jobId !== previous?.jobId) byId("job-link").hidden = true;
+
+  const changedSource = !previous || state.selectedFile !== previous.selectedFile || state.jobId !== previous.jobId;
+  if (changedSource) {
+    clearResult();
+    const file = state.selectedFile;
+    if (!file) fileInput.value = "";
+    dropzone.dataset.selected = String(Boolean(file));
+    byId("file-label").textContent = file ? file.name : "Выбрать видео";
+    byId("file-hint").textContent = file ? formatSize(file.size) + " · нажмите, чтобы заменить" : "или перетащить файл сюда";
+    if (file) player.setBlob(file, file.name);
+    else if (state.jobId) player.setPending(filename());
+    else player.clear();
+  } else if (state.jobId && !player.url && state.job?.metadata?.filename !== previous?.job?.metadata?.filename) {
+    player.setPending(filename());
+  }
+  startedAt = Number.isFinite(Date.parse(state.job?.metadata?.created_at)) ? Date.parse(state.job.metadata.created_at) : state.startedAt;
+  clearInterval(elapsedTimer);
+  if (state.status === "idle") {
+    statusContent.hidden = true;
+    statusEmpty.hidden = Boolean(state.selectedFile);
+    const title = statusEmpty.querySelector("h3");
+    const copy = statusEmpty.querySelector("p");
+    title.textContent = state.pendingJob ? "Подключитесь, чтобы открыть проверку" : state.page === "review" ? "Проверка не выбрана" : "Добавьте запись для проверки";
+    copy.textContent = state.pendingJob ? "Для доступа к сохранённому результату нужен ключ. Перейдите в раздел подключения." : state.page === "review" ? "Откройте запись в журнале или создайте новую проверку." : "После выбора файла здесь появится видео. Результат сохранится в журнале автоматически.";
+  } else {
+    const notes = {
+      preparing: "Проверяем доступность сервиса и ограничения записи.",
+      uploading: "Передаём файл сервису. Параметры видео проверит сервер.",
+      loading: "Запрашиваем сохранённую задачу…",
+      processing: "Сервис проверяет запись. Результат появится автоматически.",
+      done: "Результат готов. Сверьте каждый эпизод с исходной записью.",
+      failed: state.job?.status === "failed" ? failureMessage(state.job.error) : state.error?.message || "Проверка не выполнена.",
+      connection: (state.error?.message || "Статус временно недоступен.") + " Повторите запрос статуса.",
+    };
+    setStatus(state.status === "loading" ? "processing" : state.status, notes[state.status] || "");
+    byId("retry-button").hidden = state.status !== "connection";
+    if (state.status === "uploading") byId("submit-label").textContent = "Загружаем видео…";
+    if (state.status === "done" && state.job !== previous?.job) renderResult(state.job);
+  }
+  if (state.system) {
+    const info = state.system;
+    byId("service-note").hidden = false;
+    byId("service-note").textContent = readinessMessage(info);
+    const limitText = ["MOV"];
+    if (info.limits?.max_upload_bytes) limitText.push("до " + formatSize(info.limits.max_upload_bytes));
+    if (info.limits?.max_video_duration_sec) limitText.push("до " + formatTime(info.limits.max_video_duration_sec));
+    byId("file-help").textContent = limitText.join(" · ");
+  }
+  if (state.error !== previous?.error) setError(state.error?.message || "", null);
+  if (state.pendingJob) byId("resume-panel").open = true;
 });
-const savedJob = new URL(location.href).searchParams.get("job");
-if (savedJob && uuidPattern.test(savedJob) && !workspace.connected) {
-  statusEmpty.querySelector("h3").textContent = "Подключитесь, чтобы открыть проверку";
-  const copy = statusEmpty.querySelector("p");
-  copy.textContent = "Для доступа к сохранённому результату нужен ключ. ";
-  const link = element("a", "", "Подключиться к сервису →");
-  link.href = "#connection";
-  copy.append(link);
-}
 
 function preparePrintReport(result) {
   let report = byId("print-all-events");
@@ -639,6 +514,6 @@ byId("print-result").addEventListener("click", async () => {
 });
 window.addEventListener("beforeunload", () => {
   if (resultDownloadUrl) URL.revokeObjectURL(resultDownloadUrl);
-  sourceRequest?.abort();
+  session.dispose();
   player.clear();
 });

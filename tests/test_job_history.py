@@ -171,3 +171,23 @@ def test_invalid_catalog_returns_explicit_service_error(tmp_path):
         assert result.status_code == 503
         assert result.json()["detail"]["code"] == "invalid_rule_catalog"
 
+
+def test_source_stream_does_not_decode_the_stored_analysis_result(tmp_path):
+    app = create_app(settings_for(tmp_path))
+    with TestClient(app) as client:
+        job_id = complete(app.state.store, "original.mov")
+        directory = app.state.store.job_dir(job_id)
+        directory.mkdir()
+        source = b"synthetic original MOV bytes"
+        (directory / "input.mov").write_bytes(source)
+        # The source is independent of even a damaged analysis payload. Reading
+        # its filename must not load result_json or its potentially large frames.
+        with sqlite3.connect(app.state.store.db_path) as database:
+            database.execute("UPDATE jobs SET result_json = 'damaged-result-json' WHERE job_id = ?", (job_id,))
+        response = client.get(f"/api/v1/jobs/{job_id}/video", headers=HEADERS)
+        assert response.status_code == 200
+        assert response.content == source
+        assert 'filename="original.mov"' in response.headers["content-disposition"]
+        partial = client.get(f"/api/v1/jobs/{job_id}/video", headers={**HEADERS, "Range": "bytes=0-8"})
+        assert partial.status_code == 206
+        assert partial.content == source[:9]

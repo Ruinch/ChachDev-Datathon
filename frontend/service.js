@@ -1,9 +1,7 @@
-import { getJobs, getRules } from "./api.js";
 import { formatSize, formatTime } from "./media.js";
 
 const byId = id => document.getElementById(id);
 const labels = { checks: "Журнал проверок", new: "Новая проверка", review: "Разбор записи", rules: "Процедуры проверки", connection: "Подключение" };
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function node(tag, className, text) {
   const item = document.createElement(tag);
@@ -30,15 +28,10 @@ function safeLink(reference) {
 }
 
 export class ServiceWorkspace {
-  constructor({ getKey, onOpenJob, onNewCheck, onDisconnect, isBusy, getActiveJob }) {
-    Object.assign(this, { getKey, onOpenJob, onNewCheck, onDisconnect, isBusy, getActiveJob });
-    this.verifiedKey = "";
-    this.system = null;
-    this.page = null;
+  constructor(session) {
+    this.session = session;
     this.offset = 0;
     this.limit = 20;
-    const savedJob = new URL(location.href).searchParams.get("job");
-    this.pendingJob = savedJob && uuidPattern.test(savedJob) ? savedJob : null;
     this.historyRequest = null;
     this.rulesRequest = null;
     this.historyTimer = null;
@@ -46,8 +39,6 @@ export class ServiceWorkspace {
     this.lastSummary = null;
     this.historyVersion = 0;
     this.rulesVersion = 0;
-    window.addEventListener("hashchange", () => this.route());
-    window.addEventListener("popstate", () => this.route());
     document.addEventListener("visibilitychange", () => {
       clearTimeout(this.historyTimer);
       if (!document.hidden && this.page === "checks" && this.connected) this.loadHistory();
@@ -60,23 +51,28 @@ export class ServiceWorkspace {
     byId("history-refresh").addEventListener("click", () => this.loadHistory());
     byId("history-prev").addEventListener("click", () => { this.offset = Math.max(0, this.offset - this.limit); this.loadHistory(); });
     byId("history-next").addEventListener("click", () => { this.offset += this.limit; this.loadHistory(); });
-    byId("forget-key").addEventListener("click", () => {
-      if (this.isBusy()) return;
-      byId("api-key").value = "";
-      byId("api-key").type = "password";
-      byId("key-visibility").textContent = "Показать";
-      byId("key-visibility").setAttribute("aria-label", "Показать ключ");
-      byId("key-visibility").setAttribute("aria-pressed", "false");
-      this.onDisconnect();
-      this.invalidate();
-      this.feedback("connection-feedback", "Ключ удалён из текущей страницы. Для продолжения подключитесь заново.");
-      byId("api-key").focus();
-    });
-    this.invalidate();
-    this.route();
+    this.unsubscribe = session.subscribe((state, previous) => this.render(state, previous));
   }
 
-  get connected() { return Boolean(this.verifiedKey && this.verifiedKey === this.getKey()); }
+  get connected() { return this.session.state.connected; }
+  get page() { return this.session.state.page; }
+
+  render(state, previous) {
+    if (!previous || (!state.connected && previous.connected) || (!state.system && previous.system)) this.invalidate();
+    if (!previous || state.page !== previous.page) this.renderPage(state.page, previous?.page);
+    if (state.system && state.system !== previous?.system) this.renderConnection(state.system);
+    this.updateAccess();
+    byId("check-service").disabled = state.busy || state.connecting;
+    byId("check-service").textContent = state.connected ? "Обновить состояние" : "Подключиться";
+    byId("connection-state").textContent = state.connecting ? "Проверяем…" : state.connected ? state.system?.ready ? state.system.busy ? "Занят" : "Готов" : "Не готов" : "Не подключён";
+    byId("connection-state").dataset.ready = String(Boolean(state.connected && state.system?.ready && !state.system?.busy));
+    if (state.error && state.error !== previous?.error) this.feedback("connection-feedback", state.error.message, "error");
+    if (!state.connected) return;
+    const entered = !previous?.connected || previous.page !== state.page;
+    const finished = state.job && state.job !== previous?.job && ["done", "failed"].includes(state.job.status);
+    if (state.page === "checks" && (entered || finished)) this.loadHistory();
+    if (state.page === "rules" && entered) this.loadRules();
+  }
 
   feedback(id, text, tone = "") {
     const item = byId(id);
@@ -86,8 +82,6 @@ export class ServiceWorkspace {
   }
 
   invalidate() {
-    this.verifiedKey = "";
-    this.system = null;
     this.historyVersion += 1;
     this.rulesVersion += 1;
     this.historyRequest?.abort();
@@ -123,22 +117,20 @@ export class ServiceWorkspace {
     byId("history-range").closest(".table-pagination").hidden = !this.connected;
     byId("intake-access-note").hidden = this.connected;
     for (const id of ["history-search", "history-status", "history-verdict"]) byId(id).disabled = !this.connected;
-    byId("forget-key").disabled = this.isBusy() || !this.getKey();
+    byId("forget-key").disabled = this.session.state.busy || !this.session.state.keyPresent;
     this.updateGlobalState();
   }
 
   updateGlobalState() {
-    if (!this.connected || !this.system) return;
-    const busy = this.isBusy() || Boolean(this.lastSummary?.processing ?? this.system.busy);
+    if (!this.connected || !this.session.state.system) return;
+    const finished = ["done", "failed"].includes(this.session.state.job?.status);
+    const busy = this.session.state.busy || Boolean(this.lastSummary?.processing ?? (!finished && this.session.state.system.busy));
     const state = byId("global-service-state");
-    state.textContent = this.system.ready ? busy ? "Идёт обработка" : "Готов к проверке" : "Анализ недоступен";
-    state.dataset.state = this.system.ready ? busy ? "busy" : "ready" : "warning";
+    state.textContent = this.session.state.system.ready ? busy ? "Идёт обработка" : "Готов к проверке" : "Анализ недоступен";
+    state.dataset.state = this.session.state.system.ready ? busy ? "busy" : "ready" : "warning";
   }
 
-  setConnection(info, key) {
-    if (key !== this.getKey()) return;
-    this.verifiedKey = key;
-    this.system = info;
+  renderConnection(info) {
     byId("check-service").textContent = "Обновить состояние";
     const state = byId("global-service-state");
     state.textContent = info.ready ? info.busy ? "Идёт обработка" : "Готов к проверке" : "Анализ недоступен";
@@ -163,39 +155,12 @@ export class ServiceWorkspace {
     }
     details.append(grid);
     this.updateAccess();
-    if (this.pendingJob) {
-      const id = this.pendingJob;
-      this.pendingJob = null;
-      this.openJob(id);
-    } else if (this.page === "checks") this.loadHistory();
-    else if (this.page === "rules") this.loadRules();
   }
 
-  route() {
-    const hash = location.hash.slice(1);
-    if (hash === "main-content" && this.page) {
-      byId("main-content").focus();
-      return;
-    }
-    const savedCandidate = new URL(location.href).searchParams.get("job");
-    const saved = savedCandidate && uuidPattern.test(savedCandidate) ? savedCandidate : null;
-    const next = labels[hash] ? hash : saved ? "review" : "checks";
-    const previous = this.page;
-    if (next === "new" && previous !== "new" && this.isBusy()) {
-      this.navigate("review", this.getActiveJob());
-      byId("result-announcement").textContent = "Дождитесь завершения текущей проверки. Журнал остаётся доступен.";
-      return;
-    }
-    this.page = next;
-    if (next === "checks" || next === "rules") {
-      this.pendingJob = null;
-      if (savedCandidate) {
-        const cleanUrl = new URL(location.href);
-        cleanUrl.searchParams.delete("job");
-        history.replaceState(null, "", cleanUrl);
-      }
-    }
+  renderPage(next, previous) {
     clearTimeout(this.historyTimer);
+    this.historyRequest?.abort();
+    this.rulesRequest?.abort();
     for (const item of document.querySelectorAll("[data-view]")) item.hidden = item.dataset.view !== (next === "new" || next === "review" ? "analysis" : next);
     for (const item of document.querySelectorAll("[data-nav]")) {
       if (item.dataset.nav === (next === "review" ? "checks" : next)) item.setAttribute("aria-current", "page");
@@ -210,66 +175,12 @@ export class ServiceWorkspace {
       : "Загрузите запись кассовой операции. Результат включает события, таймкоды, исходные кадры и нормативные источники.";
     byId("view-analysis").dataset.mode = next === "review" ? "review" : "new";
     if (next !== "new" && next !== "review") byId("source-video").pause();
-    if (previous !== next) {
+    if (previous && previous !== next) {
       const heading = document.querySelector('[data-view]:not([hidden]) h1');
       heading.tabIndex = -1;
       heading.focus({ preventScroll: true });
       window.scrollTo({ top: 0, behavior: "instant" });
     }
-    this.updateAccess();
-    if (next === "new" && previous !== "new") {
-      this.pendingJob = null;
-      this.onNewCheck();
-    }
-    if (next === "review" && saved && saved !== this.getActiveJob()) {
-      if (this.connected) this.openJob(saved);
-      else {
-        this.pendingJob = saved;
-        byId("resume-job").value = saved;
-        byId("resume-panel").open = true;
-      }
-    }
-    if (next === "review" && !saved && !this.getActiveJob()) {
-      const empty = byId("status-empty");
-      empty.querySelector("h3").textContent = "Проверка не выбрана";
-      const text = empty.querySelector("p");
-      text.textContent = "Откройте сохранённую запись в журнале или создайте новую проверку. ";
-      const link = node("a", "", "Перейти к журналу →");
-      link.href = "#checks";
-      text.append(link);
-    }
-    if (next === "checks") this.loadHistory();
-    if (next === "rules") this.loadRules();
-  }
-
-  navigate(page, id = null) {
-    const url = new URL(location.href);
-    url.hash = page;
-    if (id) url.searchParams.set("job", id);
-    else if (page === "new") url.searchParams.delete("job");
-    if (url.href !== location.href) history.pushState(null, "", url);
-    this.route();
-  }
-
-  async openJob(id) {
-    if (!uuidPattern.test(id)) return;
-    if (!this.connected) {
-      this.pendingJob = id;
-      this.navigate("connection");
-      return;
-    }
-    if (this.isBusy() && id !== this.getActiveJob()) {
-      this.navigate("review", this.getActiveJob());
-      byId("result-announcement").textContent = "Дождитесь завершения текущей проверки.";
-      return;
-    }
-    const url = new URL(location.href);
-    url.hash = "review";
-    url.searchParams.set("job", id);
-    history.replaceState(null, "", url);
-    // The callback owns the current job, so render after it establishes state.
-    if (id !== this.getActiveJob()) await this.onOpenJob(id);
-    this.route();
   }
 
   async loadHistory() {
@@ -282,11 +193,11 @@ export class ServiceWorkspace {
     byId("history-body").closest("table").setAttribute("aria-busy", "true");
     this.feedback("history-feedback", "Загружаем журнал…");
     try {
-      const result = await getJobs(this.getKey(), {
+      const result = await this.session.history({
         limit: String(this.limit), offset: String(this.offset), q: byId("history-search").value.trim(),
         status: byId("history-status").value, verdict: byId("history-verdict").value,
       }, this.historyRequest.signal);
-      if (version !== this.historyVersion || !this.connected) return;
+      if (version !== this.historyVersion || !this.connected || this.page !== "checks") return;
       if (!result.items.length && result.total > 0 && this.offset >= result.total) {
         this.offset = Math.floor((result.total - 1) / this.limit) * this.limit;
         return this.loadHistory();
@@ -322,7 +233,7 @@ export class ServiceWorkspace {
         link.addEventListener("click", event => {
           if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
           event.preventDefault();
-          this.openJob(job.job_id);
+          this.session.openJob(job.job_id);
         });
         action.append(link);
         row.append(file, date, state, events, action);
@@ -340,7 +251,7 @@ export class ServiceWorkspace {
       if (result.summary.processing && !document.hidden) this.historyTimer = window.setTimeout(() => this.loadHistory(), 8000);
     } catch (error) {
       if (error.name === "AbortError" || version !== this.historyVersion) return;
-      if (error.status === 401) this.invalidate();
+
       this.feedback("history-feedback", error.message, "error");
     } finally {
       if (version === this.historyVersion) {
@@ -357,8 +268,8 @@ export class ServiceWorkspace {
     const version = ++this.rulesVersion;
     this.feedback("rules-feedback", "Загружаем процедуры…");
     try {
-      const result = await getRules(this.getKey(), this.rulesRequest.signal);
-      if (version !== this.rulesVersion || !this.connected) return;
+      const result = await this.session.rules(this.rulesRequest.signal);
+      if (version !== this.rulesVersion || !this.connected || this.page !== "rules") return;
       byId("rules-summary").textContent = `Всего процедур: ${result.total}. Активных: ${result.enabled_count}. Отключённые процедуры не участвуют в анализе.`;
       byId("rules-summary").hidden = false;
       const cards = result.items.map(rule => {
@@ -388,13 +299,9 @@ export class ServiceWorkspace {
       this.feedback("rules-feedback", result.total ? "" : "В каталоге пока нет процедур.");
     } catch (error) {
       if (error.name === "AbortError" || version !== this.rulesVersion) return;
-      if (error.status === 401) this.invalidate();
+
       this.feedback("rules-feedback", error.message, "error");
     }
   }
 
-  jobUpdated() {
-    this.updateAccess();
-    if (this.page === "checks") this.loadHistory();
-  }
 }

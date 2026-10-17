@@ -10,6 +10,7 @@ Starts the local API with one worker using the project virtual environment.
 param(
     [string]$BindAddress = '127.0.0.1',
     [ValidateRange(1, 65535)][int]$Port = 8000,
+    [string]$EnvPath,
     [switch]$RequireAnalyzer,
     [switch]$AllowMissingMediaTools
 )
@@ -17,9 +18,12 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
-Import-ProjectEnvironment -Path (Join-Path $projectRoot '.env')
+$null = Initialize-ProjectEnvironment -ProjectRoot $projectRoot -EnvPath $EnvPath
+if ([string]::IsNullOrWhiteSpace($env:APP_API_KEY)) {
+    throw 'APP_API_KEY is missing. Run scripts/setup.ps1 first, or set a key in your existing .env.'
+}
 $pythonPath = Get-ProjectPython -ProjectRoot $projectRoot
-& (Join-Path $PSScriptRoot 'check.ps1') -RequireAnalyzer:$RequireAnalyzer -AllowMissingMediaTools:$AllowMissingMediaTools
+& (Join-Path $PSScriptRoot 'check.ps1') -EnvPath $EnvPath -RequireAnalyzer:$RequireAnalyzer -AllowMissingMediaTools:$AllowMissingMediaTools
 
 Push-Location -LiteralPath $projectRoot
 try {

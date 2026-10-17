@@ -1,0 +1,9 @@
+{
+  "name": "cash-control-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/frontend/*.test.mjs",
+    "check": "node --check frontend/app.js && node --check frontend/service.js && node --check frontend/session.js && node --check frontend/api.js && node --check frontend/media.js"
+  }
+}

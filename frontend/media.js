@@ -31,6 +31,8 @@ export class SourcePlayer {
     this.toggle = document.querySelector("#toggle-video");
     this.url = null;
     this.filename = "";
+    this.generation = 0;
+    this.pendingSeek = null;
     this.toggle.addEventListener("click", () => this.collapse(!this.body.hidden));
     this.video.addEventListener("loadedmetadata", () => {
       this.note.textContent = `Длительность ${formatTime(this.video.duration)} · просмотр в браузере`;
@@ -41,6 +43,9 @@ export class SourcePlayer {
   }
 
   clear() {
+    this.generation += 1;
+    if (this.pendingSeek) this.video.removeEventListener("loadedmetadata", this.pendingSeek);
+    this.pendingSeek = null;
     this.video.pause();
     this.video.removeAttribute("src");
     this.video.load();
@@ -88,13 +93,20 @@ export class SourcePlayer {
 
   seek(seconds) {
     if (!this.url) return false;
+    const generation = this.generation;
     const move = () => {
+      this.pendingSeek = null;
+      if (generation !== this.generation) return;
       const target = Math.max(0, Number(seconds) || 0);
       this.video.currentTime = Number.isFinite(this.video.duration) ? Math.min(target, Math.max(0, this.video.duration - .05)) : target;
       this.note.textContent = `Эпизод на ${formatTime(target)}. Нажмите воспроизведение, чтобы проверить последовательность действий.`;
     };
+    if (this.pendingSeek) this.video.removeEventListener("loadedmetadata", this.pendingSeek);
     if (this.video.readyState >= 1) move();
-    else this.video.addEventListener("loadedmetadata", move, { once: true });
+    else {
+      this.pendingSeek = move;
+      this.video.addEventListener("loadedmetadata", move, { once: true });
+    }
     this.collapse(false);
     this.panel.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     this.video.focus({ preventScroll: true });
@@ -142,6 +154,12 @@ export class EvidenceViewer {
     this.show(index);
     document.body.classList.add("dialog-open");
     this.dialog.showModal();
+  }
+
+  close() {
+    if (this.dialog.open) this.dialog.close();
+    this.image.removeAttribute("src");
+    this.frames = [];
   }
 
   show(index) {

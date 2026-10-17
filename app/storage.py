@@ -139,6 +139,20 @@ class JobStore:
         }
         return record
 
+    def get_metadata(self, job_id: str) -> dict | None:
+        """Read source information without fetching or decoding evidence payloads."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT filename, created_at, updated_at, metadata_json FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            **_json_object(row["metadata_json"]),
+            "filename": row["filename"], "created_at": row["created_at"], "updated_at": row["updated_at"],
+        }
+
     def set_done(self, job_id: str, result: dict) -> None:
         verdict = result.get("verdict")
         if verdict not in ("violation", "no_violation"):
