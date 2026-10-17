@@ -57,8 +57,23 @@ def _full_video_checked(result: LocalAnalysisResult, rule_catalog: RuleCatalog) 
 
 
 def extract_jpeg(video_path: Path, timestamp_sec: float, output_path: Path, ffmpeg_bin: str) -> bytes:
-    """Take a real frame from the uploaded video using a local FFmpeg process."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    """Take the source frame displayed at a validated position in the video.
+
+    Preserve frames between the preceding seek point and the requested position.
+    Their timestamps become nonpositive after input seeking. A one-microsecond
+    output window includes the frame at zero; updating one JPEG leaves the last
+    displayed frame, including the final interval before the container ends.
+    Passing the filter time base prevents encoder FPS rounding from selecting a
+    later frame. No constant frame rate or guessed backwards offset is needed.
+    The caller validates the upper bound against the probed source duration.
+    """
+    if not math.isfinite(timestamp_sec) or timestamp_sec < 0:
+        raise AnalysisContractError("An evidence timestamp must be finite and nonnegative")
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise EvidenceExtractionError("Could not prepare an evidence frame") from exc
     command = [
         ffmpeg_bin,
         "-hide_banner",
@@ -67,6 +82,7 @@ def extract_jpeg(video_path: Path, timestamp_sec: float, output_path: Path, ffmp
         "-nostdin",
         "-ss",
         str(timestamp_sec),
+        "-noaccurate_seek",
         "-protocol_whitelist",
         "file,pipe",
         "-i",
@@ -76,7 +92,13 @@ def extract_jpeg(video_path: Path, timestamp_sec: float, output_path: Path, ffmp
         "-an",
         "-sn",
         "-dn",
-        "-frames:v",
+        "-t",
+        "0.000001",
+        "-fps_mode",
+        "passthrough",
+        "-enc_time_base",
+        "filter",
+        "-update",
         "1",
         "-vf",
         "scale=960:960:force_original_aspect_ratio=decrease",

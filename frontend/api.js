@@ -1,9 +1,10 @@
 export class ApiError extends Error {
-  constructor(message, code, status) {
+  constructor(message, code, status, { outcomeUnknown = false } = {}) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
+    this.outcomeUnknown = outcomeUnknown;
   }
 }
 
@@ -34,6 +35,14 @@ const messages = {
   job_not_found: "Задача не найдена. Проверьте номер или загрузите запись заново.",
 };
 
+// These structured service errors are returned before a job is accepted. A
+// generic proxy 503/507 does not provide the same guarantee.
+const uploadRejections = new Set([
+  "analyzer_unavailable", "analyzer_config_invalid", "analysis_not_ready", "invalid_rule_catalog",
+  "video_tools_unavailable", "rules_unavailable", "ffmpeg_unavailable", "ffprobe_unavailable",
+  "server_busy", "service_busy", "busy", "storage_unavailable",
+]);
+
 async function responseError(response) {
   let detail;
   try {
@@ -57,6 +66,7 @@ async function responseError(response) {
 // Requests are never retried here: repeating a POST could create a second check.
 export async function apiRequest(path, key, options = {}) {
   const { signal, timeoutMs = 15000, responseType = "json", ...request } = options;
+  const uploading = request.method?.toUpperCase() === "POST";
   if (signal?.aborted) throw new DOMException("Запрос отменён.", "AbortError");
   const controller = new AbortController();
   let response;
@@ -71,9 +81,12 @@ export async function apiRequest(path, key, options = {}) {
     else signal?.addEventListener("abort", abortRequest, { once: true });
     timer = setTimeout(() => {
       controller.abort();
-      reject(new ApiError(request.method === "POST"
+      const rejected = response?.status >= 400 && response.status < 500;
+      reject(new ApiError(rejected
+        ? `Сервис отклонил запрос (${response.status}), но не передал подробности вовремя.`
+        : uploading
         ? "Сервис не ответил вовремя. Перед повторной загрузкой проверьте журнал: запись могла быть принята."
-        : "Сервис не ответил вовремя. Проверьте подключение и повторите запрос.", "request_timeout", 0));
+        : "Сервис не ответил вовремя. Проверьте подключение и повторите запрос.", "request_timeout", rejected ? response.status : 0));
     }, timeoutMs);
   });
   const operation = (async () => {
@@ -89,9 +102,20 @@ export async function apiRequest(path, key, options = {}) {
   try {
     return await Promise.race([operation, cancellation]);
   } catch (error) {
-    if (error instanceof ApiError || error.name === "AbortError") throw error;
-    if (error instanceof SyntaxError) throw new ApiError("Сервис вернул нечитаемый ответ. Повторите запрос.", "invalid_response", response?.status || 0);
-    throw new ApiError("Не удалось связаться с сервисом. Проверьте подключение.", "network_error", 0);
+    if (error.name === "AbortError") throw error;
+    let failure = error instanceof ApiError ? error : error instanceof SyntaxError
+      ? new ApiError("Сервис вернул нечитаемый ответ.", "invalid_response", response?.status || 0)
+      : new ApiError("Не удалось связаться с сервисом. Проверьте подключение.", "network_error", 0);
+    const uncertain = uploading && !(failure.status >= 400 && failure.status < 500) && (
+      ["request_timeout", "network_error", "invalid_response"].includes(failure.code)
+      || (failure.status >= 500 && !uploadRejections.has(failure.code))
+    );
+    if (uncertain) {
+      const message = /журнал/i.test(failure.message) ? failure.message
+        : `${failure.message} Запись могла быть принята. Перед повторной загрузкой проверьте журнал.`;
+      failure = new ApiError(message, failure.code, failure.status, { outcomeUnknown: true });
+    }
+    throw failure;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", abortRequest);
@@ -123,4 +147,8 @@ export function getJobs(key, filters, signal) {
 
 export function getRules(key, signal) {
   return apiRequest("/api/v1/rules", key, { signal });
+}
+
+export function getLegalGuide(key, signal) {
+  return apiRequest("/api/v1/legal-guide", key, { signal });
 }

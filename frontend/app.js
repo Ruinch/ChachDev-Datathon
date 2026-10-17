@@ -1,6 +1,7 @@
 import { WorkspaceSession } from "./session.js";
 import { SourcePlayer, EvidenceViewer, formatTime, formatSize, validFrame, createJsonDownload } from "./media.js";
 import { ServiceWorkspace } from "./service.js";
+import { describeAnalysisScope } from "./result-scope.js";
 
 const byId = id => document.getElementById(id);
 const form = byId("analyze-form");
@@ -239,6 +240,10 @@ function renderEventDetail(index) {
     } catch (_) { /* The title remains useful when a URL is malformed. */ }
   }
   rule.append(box);
+  const legalNote = element("p", "legal-reference-note", "Здесь приведена нормативная ссылка, сохранённая с результатом. Редакция справки при анализе не записывалась; применимость нормы нужно сверять с датой и условиями операции.");
+  const legalLink = element("a", "rule-link", "Открыть правовую справку →");
+  legalLink.href = "#rules";
+  rule.append(legalNote, legalLink);
   eventDetail.append(rule);
 }
 
@@ -258,10 +263,7 @@ function renderResult(result) {
   const scopeNote = byId("analysis-scope");
   scopeNote.hidden = false;
   scopeNote.dataset.complete = String(Boolean(scope?.full_video_checked));
-  const limitations = Array.isArray(scope?.limitations) ? scope.limitations.filter(item => typeof item === "string") : [];
-  scopeNote.textContent = scope?.full_video_checked
-    ? "Запись полностью проверена по активным правилам. Правил: " + (Array.isArray(scope.checked_rule_ids) ? scope.checked_rule_ids.length : 0) + "."
-    : "Показаны обнаруженные события. Полная проверка всех процедур не завершена." + (limitations.length ? " Ограничения: " + limitations.join("; ") : "");
+  scopeNote.textContent = describeAnalysisScope(scope);
   if (result.verdict === "violation" && events.length) {
     currentEvents = events.slice().sort((a, b) => a.timecode_sec - b.timecode_sec);
     resultsTitle.textContent = "Найденные эпизоды";
@@ -292,9 +294,9 @@ function renderResult(result) {
     badge.textContent = clear ? "БЕЗ СОБЫТИЙ" : "НЕТ ДАННЫХ";
     badge.dataset.verdict = clear ? "no_violation" : "unknown";
     noEvents.dataset.state = clear ? "clear" : "unknown";
-    summary.textContent = clear ? "Запись проверена по активным правилам сервиса." : "Сервис вернул неполный ответ.";
+    summary.textContent = clear ? "Запись проверена по сохранённому набору процедур." : "Сервис вернул неполный ответ.";
     noEvents.querySelector("h3").textContent = clear ? "По проверяемым процедурам нарушений не обнаружено" : "Не удалось показать результат";
-    noEvents.querySelector("p").textContent = clear ? "Этот вывод относится к подключённым правилам. Другие процедуры и действия требуют отдельной оценки по исходной записи." : "Повторите проверку или изучите ответ API.";
+    noEvents.querySelector("p").textContent = clear ? "Вывод относится к указанным выше сохранённым процедурам этой проверки. Другие действия требуют отдельной оценки по исходной записи." : "Повторите проверку или изучите ответ API.";
     noEvents.querySelector(".no-events-icon").textContent = clear ? "✓" : "!";
   }
   byId("result-announcement").textContent = "Проверка завершена. " + summary.textContent;
@@ -418,6 +420,7 @@ session.subscribe((state, previous) => {
   byId("check-service").disabled = state.busy || state.connecting;
   byId("resume-job").value = state.pendingJob || state.jobId || "";
   byId("copy-job").hidden = !state.jobId;
+  byId("upload-uncertain").hidden = !state.uploadUncertain;
   if (state.jobId !== previous?.jobId) byId("job-link").hidden = true;
 
   const changedSource = !previous || state.selectedFile !== previous.selectedFile || state.jobId !== previous.jobId;
@@ -451,10 +454,18 @@ session.subscribe((state, previous) => {
       processing: "Сервис проверяет запись. Результат появится автоматически.",
       done: "Результат готов. Сверьте каждый эпизод с исходной записью.",
       failed: state.job?.status === "failed" ? failureMessage(state.job.error) : state.error?.message || "Проверка не выполнена.",
-      connection: (state.error?.message || "Статус временно недоступен.") + " Повторите запрос статуса.",
+      connection: state.pollRetry
+        ? state.pollRetry.exhausted
+          ? "Автоматическое восстановление не удалось. Обновите статус вручную; новая загрузка не требуется. Проверка на сервере может продолжаться."
+          : state.pollRetry.delayMs > 0
+            ? `Связь прервана. Автоматическая попытка ${state.pollRetry.attempt}/${state.pollRetry.maxAttempts} через ${state.pollRetry.delayMs / 1000} с. Проверка на сервере может продолжаться.`
+            : `Запрашиваем статус, попытка ${state.pollRetry.attempt}/${state.pollRetry.maxAttempts}.`
+        : (state.error?.message || "Статус временно недоступен.") + " Обновите статус вручную.",
     };
     setStatus(state.status === "loading" ? "processing" : state.status, notes[state.status] || "");
+    if (state.uploadUncertain) byId("status-label").textContent = "Создание задачи не подтверждено";
     byId("retry-button").hidden = state.status !== "connection";
+    byId("retry-button").textContent = state.pollRetry && !state.pollRetry.exhausted ? "Обновить сейчас" : "Обновить статус";
     if (state.status === "uploading") byId("submit-label").textContent = "Загружаем видео…";
     if (state.status === "done" && state.job !== previous?.job) renderResult(state.job);
   }
@@ -480,7 +491,8 @@ function preparePrintReport(result) {
   }
   report.replaceChildren();
   report.append(element("h2", "", "Кассовый контроль · Отчёт по проверке"));
-  report.append(element("p", "", "Вердикт: " + (result.verdict === "violation" ? "обнаружены события, требующие проверки" : result.verdict === "no_violation" && result.analysis_scope?.full_video_checked ? "по активным процедурам нарушений не обнаружено" : "результат требует уточнения")));
+  report.append(element("p", "", "Вердикт: " + (result.verdict === "violation" ? "обнаружены события, требующие проверки" : result.verdict === "no_violation" && result.analysis_scope?.full_video_checked ? "по сохранённому набору процедур нарушений не обнаружено" : "результат требует уточнения")));
+  report.append(element("p", "print-scope", describeAnalysisScope(result.analysis_scope)));
   const events = Array.isArray(result.violations) ? result.violations.slice().sort((a, b) => a.timecode_sec - b.timecode_sec) : [];
   for (const [index, event] of events.entries()) {
     const article = element("article", "print-event");
@@ -500,7 +512,7 @@ function preparePrintReport(result) {
     if (event.rule?.source_url) article.append(element("p", "print-reference", event.rule.source_url));
     report.append(article);
   }
-  report.append(element("p", "", "Вывод относится к активным процедурам сервиса. Сверьте найденные эпизоды с исходной видеозаписью."));
+  report.append(element("p", "", "Вывод относится к сохранённому набору процедур этой проверки. Сверьте найденные эпизоды с исходной видеозаписью. Нормативные ссылки сохранены с результатом; редакция справки при анализе не записывалась. Проверьте применимость нормы на дату операции."));
 }
 byId("print-result").addEventListener("click", async () => {
   if (!currentResult) return;

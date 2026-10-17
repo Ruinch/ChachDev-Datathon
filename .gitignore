@@ -1,6 +1,6 @@
 # Local jobs, uploaded videos, and generated evidence stay on this machine.
 .local_data/
-data/
+/data/
 
 # Credentials and Python environment.
 .env

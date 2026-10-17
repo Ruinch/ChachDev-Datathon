@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
-from app.analyzer import LocalAnalysisResult
+from app.analyzer import AnalysisContractError, LocalAnalysisResult
 from app.evidence import EvidenceExtractionError, extract_jpeg, materialize_result
 from app.rules import RuleCatalog
 
@@ -46,6 +46,24 @@ def test_extracts_decodable_jpeg_and_ignores_audio(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.evidence.subprocess.run", fake_ffmpeg)
     assert extract_jpeg(tmp_path / "input.mov", 1.5, tmp_path / "frame.jpg", "ffmpeg") == frame
+
+
+@pytest.mark.parametrize("timestamp", [-1, float("nan"), float("inf")])
+def test_invalid_timestamp_is_rejected_before_extracting(tmp_path, monkeypatch, timestamp):
+    def must_not_run(*args, **kwargs):
+        pytest.fail("Invalid timestamps must not reach FFmpeg")
+
+    monkeypatch.setattr("app.evidence.subprocess.run", must_not_run)
+    with pytest.raises(AnalysisContractError):
+        extract_jpeg(tmp_path / "input.mov", timestamp, tmp_path / "frame.jpg", "ffmpeg")
+
+
+def test_empty_extraction_cannot_reuse_an_old_evidence_image(tmp_path, monkeypatch):
+    output = tmp_path / "frame.jpg"
+    output.write_bytes(jpeg_bytes())
+    monkeypatch.setattr("app.evidence.subprocess.run", lambda *args, **kwargs: None)
+    with pytest.raises(EvidenceExtractionError):
+        extract_jpeg(tmp_path / "input.mov", 1.5, output, "ffmpeg")
 
 
 def test_materialized_event_uses_catalog_and_original_frame_bytes(tmp_path, monkeypatch):

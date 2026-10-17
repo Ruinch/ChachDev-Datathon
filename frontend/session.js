@@ -4,6 +4,8 @@ const pages = new Set(["checks", "new", "review", "rules", "connection"]);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const normalizeJob = value => typeof value === "string" && uuid.test(value) ? value.toLowerCase() : null;
 const aborted = () => new DOMException("Запрос отменён.", "AbortError");
+const pollBackoff = [1000, 2000, 4000, 8000];
+const retryableStatus = error => !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
 
 function browserNavigation() {
   return {
@@ -32,6 +34,7 @@ export class WorkspaceSession {
   #listeners = new Set();
   #requests = new Set();
   #pollTimer = null;
+  #pollFailures = 0;
   #connectionRequest = null;
   #jobRequest = null;
   #sourceRequest = null;
@@ -52,7 +55,7 @@ export class WorkspaceSession {
     this.state = Object.freeze({
       page, connected: false, connecting: false, keyPresent: false, system: null,
       selectedFile: null, jobId: null, job: null, status: "idle", busy: false,
-      pendingJob, error: null, startedAt: null, revision: 0,
+      pendingJob, error: null, pollRetry: null, uploadUncertain: false, startedAt: null, revision: 0,
     });
     this.stopNavigation = navigation.listen(() => this.#readRoute());
   }
@@ -74,6 +77,7 @@ export class WorkspaceSession {
     this.#jobVersion += 1;
     this.scheduler.clearTimeout(this.#pollTimer);
     this.#pollTimer = null;
+    this.#pollFailures = 0;
     this.#jobRequest?.controller.abort();
     this.#jobRequest = null;
     this.#sourceRequest?.abort();
@@ -95,7 +99,7 @@ export class WorkspaceSession {
     this.#key = key;
     this.#cancelAuth();
     this.#update({ connected: false, connecting: false, keyPresent: Boolean(key), system: null,
-      jobId: null, job: null, status: "idle", error: null, startedAt: null });
+      jobId: null, job: null, status: "idle", error: null, pollRetry: null, startedAt: null });
     return true;
   }
 
@@ -105,11 +109,11 @@ export class WorkspaceSession {
     this.#key = "";
     this.#cancelAuth();
     this.#update({ connected: false, connecting: false, keyPresent: false, system: null,
-      jobId: null, job: null, status: "idle", error: null, startedAt: null });
+      jobId: null, job: null, status: "idle", error: null, pollRetry: null, startedAt: null });
     return true;
   }
 
-  async #request(operation, externalSignal) {
+  async #request(operation, externalSignal, { upload = false } = {}) {
     if (!this.#key) throw new Error("Введите ключ доступа.");
     const version = this.#authVersion;
     const key = this.#key;
@@ -126,9 +130,13 @@ export class WorkspaceSession {
       if (version !== this.#authVersion || controller.signal.aborted || this.#disposed) throw aborted();
       if (error.status === 401) {
         const pendingJob = this.state.jobId || this.state.pendingJob;
+        // A parallel request can invalidate credentials while the POST has
+        // already reached the server. Cancelling its reply cannot prove refusal.
+        // A 401 received from the POST itself does prove that it was rejected.
+        const uploadUncertain = this.state.uploadUncertain || (!upload && this.state.status === "uploading");
         this.#cancelAuth();
         this.#update({ connected: false, connecting: false, system: null, jobId: null,
-          job: null, busy: false, status: "idle", pendingJob, startedAt: null, error });
+          job: null, busy: false, status: "idle", pendingJob, pollRetry: null, uploadUncertain, startedAt: null, error });
       }
       throw error;
     } finally {
@@ -224,14 +232,14 @@ export class WorkspaceSession {
     const page = this.state.page === "review" ? "new" : this.state.page;
     this.#writeRoute(page, null, true);
     this.#update({ page, selectedFile: file || null, jobId: null, job: null,
-      status: "idle", pendingJob: null, error: null, startedAt: null });
+      status: "idle", pendingJob: null, error: null, pollRetry: null, uploadUncertain: false, startedAt: null });
     return true;
   }
 
   reset() {
     if (this.state.busy) return false;
     this.#cancelJob();
-    this.#update({ selectedFile: null, jobId: null, job: null, status: "idle", error: null, startedAt: null });
+    this.#update({ selectedFile: null, jobId: null, job: null, status: "idle", error: null, pollRetry: null, uploadUncertain: false, startedAt: null });
     return true;
   }
 
@@ -258,14 +266,16 @@ export class WorkspaceSession {
     }
     this.#cancelJob();
     this.#update({ page: "review", selectedFile: null, pendingJob: null,
-      jobId: id, job: null, status: "loading", busy: true, error: null, startedAt: null });
+      jobId: id, job: null, status: "loading", busy: true, error: null, pollRetry: null, uploadUncertain: false, startedAt: null });
     return this.refreshJob();
   }
 
-  refreshJob() {
+  refreshJob({ automatic = false } = {}) {
     if (!this.state.jobId) return Promise.resolve(false);
     if (this.#jobRequest) return this.#jobRequest.promise;
+    if (!automatic) this.#pollFailures = 0;
     this.scheduler.clearTimeout(this.#pollTimer);
+    this.#pollTimer = null;
     const id = this.state.jobId;
     const version = this.#jobVersion;
     const controller = new AbortController();
@@ -273,19 +283,30 @@ export class WorkspaceSession {
       .then(job => {
         if (version !== this.#jobVersion || id !== this.state.jobId) return false;
         if (!["processing", "done", "failed"].includes(job.status)) throw new Error("Сервис вернул неизвестное состояние задачи.");
-        this.#update({ job, status: job.status, busy: job.status === "processing", error: null });
-        if (job.status === "processing") this.#pollTimer = this.scheduler.setTimeout(() => this.refreshJob(), 2000);
+        this.#pollFailures = 0;
+        this.#update({ job, status: job.status, busy: job.status === "processing", error: null, pollRetry: null });
+        if (job.status === "processing") this.#pollTimer = this.scheduler.setTimeout(() => this.refreshJob({ automatic: true }), 2000);
         return true;
       })
       .catch(error => {
         if (version !== this.#jobVersion || error.name === "AbortError") return false;
         // Unknown status does not prove the server stopped processing.
-        const processing = this.state.job?.status === "processing";
-        this.#update({ status: "connection", busy: processing, error });
+        const processing = this.state.job?.status === "processing" && error.status !== 404;
+        let pollRetry = null;
+        if (retryableStatus(error)) {
+          const delayMs = pollBackoff[this.#pollFailures];
+          if (delayMs !== undefined) {
+            this.#pollFailures += 1;
+            pollRetry = { attempt: this.#pollFailures, maxAttempts: pollBackoff.length, delayMs, exhausted: false };
+            this.#pollTimer = this.scheduler.setTimeout(() => this.refreshJob({ automatic: true }), delayMs);
+          } else pollRetry = { attempt: this.#pollFailures, maxAttempts: pollBackoff.length, delayMs: 0, exhausted: true };
+        }
+        this.#update({ status: "connection", busy: processing, error, pollRetry });
         return false;
       })
       .finally(() => { if (this.#jobRequest?.controller === controller) this.#jobRequest = null; });
     this.#jobRequest = { controller, promise };
+    if (this.state.pollRetry) this.#update({ pollRetry: automatic ? { ...this.state.pollRetry, delayMs: 0 } : null });
     return promise;
   }
 
@@ -295,7 +316,7 @@ export class WorkspaceSession {
     if (!file || !file.name.toLowerCase().endsWith(".mov")) throw new Error("Выберите видео в формате .mov.");
     if (!file.size) throw new Error("Файл пустой. Выберите другую запись.");
     if (!this.#key) { this.navigate("connection"); throw new Error("Подключитесь к сервису, затем вернитесь к выбранной записи."); }
-    this.#update({ busy: true, status: "preparing", error: null });
+    this.#update({ busy: true, status: "preparing", error: null, pollRetry: null, uploadUncertain: false });
     const version = this.#authVersion;
     try {
       const info = await this.connect();
@@ -304,9 +325,9 @@ export class WorkspaceSession {
       if (Number.isFinite(duration) && duration > info.limits.max_video_duration_sec) throw new Error("Длительность записи превышает допустимый лимит сервиса.");
       this.#cancelJob();
       this.#update({ job: null, jobId: null, startedAt: Date.now(), status: "uploading" });
-      const job = await this.#request((key, signal) => this.api.startAnalysis(file, key, signal));
-      const id = normalizeJob(job.job_id);
-      if (!id || job.status !== "processing") throw new Error("Сервис вернул некорректный ответ создания задачи. Проверьте журнал перед повторной загрузкой.");
+      const job = await this.#request((key, signal) => this.api.startAnalysis(file, key, signal), undefined, { upload: true });
+      const id = normalizeJob(job?.job_id);
+      if (!id || job.status !== "processing") throw new http.ApiError("Сервис вернул некорректный ответ создания задачи. Запись могла быть принята. Проверьте журнал перед повторной загрузкой.", "invalid_response", 202, { outcomeUnknown: true });
       this.#writeRoute("review", id);
       this.#update({ page: "review", jobId: id, job, status: "processing", pendingJob: null });
       void this.refreshJob();
@@ -314,7 +335,10 @@ export class WorkspaceSession {
     } catch (error) {
       if (version !== this.#authVersion || error.name === "AbortError") return false;
       const status = this.state.status === "uploading" ? "failed" : "idle";
-      this.#update({ busy: false, status, error });
+      if (error.outcomeUnknown && !/журнал/i.test(error.message)) {
+        error = new http.ApiError(`${error.message} Запись могла быть принята. Перед повторной загрузкой проверьте журнал.`, error.code, error.status, { outcomeUnknown: true });
+      }
+      this.#update({ busy: false, status, error, uploadUncertain: Boolean(error.outcomeUnknown) });
       throw error;
     }
   }
@@ -337,6 +361,7 @@ export class WorkspaceSession {
 
   history(filters, signal) { return this.#request((key, token) => this.api.getJobs(key, filters, token), signal); }
   rules(signal) { return this.#request((key, token) => this.api.getRules(key, token), signal); }
+  legalGuide(signal) { return this.#request((key, token) => this.api.getLegalGuide(key, token), signal); }
 
   dispose() {
     this.#disposed = true;

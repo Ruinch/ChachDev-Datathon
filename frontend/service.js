@@ -1,4 +1,5 @@
 import { formatSize, formatTime } from "./media.js";
+import { renderLegalGuide } from "./legal.js";
 
 const byId = id => document.getElementById(id);
 const labels = { checks: "Журнал проверок", new: "Новая проверка", review: "Разбор записи", rules: "Процедуры проверки", connection: "Подключение" };
@@ -34,11 +35,15 @@ export class ServiceWorkspace {
     this.limit = 20;
     this.historyRequest = null;
     this.rulesRequest = null;
+    this.legalRequest = null;
+    this.rulesLoading = false;
+    this.legalLoading = false;
     this.historyTimer = null;
     this.searchTimer = null;
     this.lastSummary = null;
     this.historyVersion = 0;
     this.rulesVersion = 0;
+    this.legalVersion = 0;
     document.addEventListener("visibilitychange", () => {
       clearTimeout(this.historyTimer);
       if (!document.hidden && this.page === "checks" && this.connected) this.loadHistory();
@@ -51,6 +56,8 @@ export class ServiceWorkspace {
     byId("history-refresh").addEventListener("click", () => this.loadHistory());
     byId("history-prev").addEventListener("click", () => { this.offset = Math.max(0, this.offset - this.limit); this.loadHistory(); });
     byId("history-next").addEventListener("click", () => { this.offset += this.limit; this.loadHistory(); });
+    byId("rules-refresh").addEventListener("click", () => this.loadRules());
+    byId("legal-refresh").addEventListener("click", () => this.loadLegalGuide());
     this.unsubscribe = session.subscribe((state, previous) => this.render(state, previous));
   }
 
@@ -71,7 +78,10 @@ export class ServiceWorkspace {
     const entered = !previous?.connected || previous.page !== state.page;
     const finished = state.job && state.job !== previous?.job && ["done", "failed"].includes(state.job.status);
     if (state.page === "checks" && (entered || finished)) this.loadHistory();
-    if (state.page === "rules" && entered) this.loadRules();
+    if (state.page === "rules" && entered) {
+      this.loadRules();
+      this.loadLegalGuide();
+    }
   }
 
   feedback(id, text, tone = "") {
@@ -84,12 +94,19 @@ export class ServiceWorkspace {
   invalidate() {
     this.historyVersion += 1;
     this.rulesVersion += 1;
+    this.legalVersion += 1;
     this.historyRequest?.abort();
     this.rulesRequest?.abort();
+    this.legalRequest?.abort();
+    this.rulesLoading = false;
+    this.legalLoading = false;
     clearTimeout(this.historyTimer);
     this.lastSummary = null;
     byId("history-body").replaceChildren();
     byId("rules-list").replaceChildren();
+    byId("legal-content").replaceChildren();
+    byId("rules-list").removeAttribute("aria-busy");
+    byId("legal-content").removeAttribute("aria-busy");
     byId("system-details").replaceChildren(node("p", "muted-copy", "Состояние и лимиты появятся после подключения к сервису."));
     for (const id of ["stat-total", "stat-processing", "stat-violation", "stat-done"]) byId(id).textContent = "—";
     byId("history-range").textContent = "";
@@ -98,6 +115,7 @@ export class ServiceWorkspace {
     byId("history-empty").hidden = true;
     this.feedback("history-feedback", "");
     this.feedback("rules-feedback", "");
+    this.feedback("legal-feedback", "");
     this.feedback("connection-feedback", "");
     byId("connection-state").textContent = "Не подключён";
     byId("check-service").textContent = "Подключиться";
@@ -113,6 +131,10 @@ export class ServiceWorkspace {
   updateAccess() {
     byId("history-locked").hidden = this.connected;
     byId("rules-locked").hidden = this.connected;
+    byId("rules-catalog").hidden = !this.connected;
+    byId("legal-guide").hidden = !this.connected;
+    byId("rules-refresh").disabled = !this.connected || this.rulesLoading;
+    byId("legal-refresh").disabled = !this.connected || this.legalLoading;
     byId("history-body").closest(".table-scroll").hidden = !this.connected;
     byId("history-range").closest(".table-pagination").hidden = !this.connected;
     byId("intake-access-note").hidden = this.connected;
@@ -161,6 +183,7 @@ export class ServiceWorkspace {
     clearTimeout(this.historyTimer);
     this.historyRequest?.abort();
     this.rulesRequest?.abort();
+    this.legalRequest?.abort();
     for (const item of document.querySelectorAll("[data-view]")) item.hidden = item.dataset.view !== (next === "new" || next === "review" ? "analysis" : next);
     for (const item of document.querySelectorAll("[data-nav]")) {
       if (item.dataset.nav === (next === "review" ? "checks" : next)) item.setAttribute("aria-current", "page");
@@ -266,6 +289,9 @@ export class ServiceWorkspace {
     this.rulesRequest?.abort();
     this.rulesRequest = new AbortController();
     const version = ++this.rulesVersion;
+    this.rulesLoading = true;
+    byId("rules-refresh").disabled = true;
+    byId("rules-list").setAttribute("aria-busy", "true");
     this.feedback("rules-feedback", "Загружаем процедуры…");
     try {
       const result = await this.session.rules(this.rulesRequest.signal);
@@ -291,7 +317,8 @@ export class ServiceWorkspace {
           for (const value of values) list.append(node("li", "", value));
           card.append(list);
         }
-        if (rule.verification !== "verified") card.append(node("p", "field-help", "Источник и условия применения ожидают подтверждения. Эта процедура не используется в результатах анализа."));
+        if (rule.verification_note) card.append(node("p", "field-help", rule.verification_note));
+        else if (rule.verification !== "verified") card.append(node("p", "field-help", "Источник и условия применения ожидают подтверждения. Эта процедура не используется в результатах анализа."));
         if (rule.verified_on) card.append(node("p", "field-help", "Проверена: " + rule.verified_on));
         return card;
       });
@@ -301,6 +328,38 @@ export class ServiceWorkspace {
       if (error.name === "AbortError" || version !== this.rulesVersion) return;
 
       this.feedback("rules-feedback", error.message, "error");
+    } finally {
+      if (version === this.rulesVersion) {
+        this.rulesLoading = false;
+        byId("rules-refresh").disabled = !this.connected;
+        byId("rules-list").removeAttribute("aria-busy");
+      }
+    }
+  }
+
+  async loadLegalGuide() {
+    if (!this.connected || this.page !== "rules") return;
+    this.legalRequest?.abort();
+    this.legalRequest = new AbortController();
+    const version = ++this.legalVersion;
+    this.legalLoading = true;
+    byId("legal-refresh").disabled = true;
+    byId("legal-content").setAttribute("aria-busy", "true");
+    this.feedback("legal-feedback", "Загружаем правовую справку…");
+    try {
+      const guide = await this.session.legalGuide(this.legalRequest.signal);
+      if (version !== this.legalVersion || !this.connected || this.page !== "rules") return;
+      renderLegalGuide(byId("legal-content"), guide);
+      this.feedback("legal-feedback", "");
+    } catch (error) {
+      if (error.name === "AbortError" || version !== this.legalVersion) return;
+      this.feedback("legal-feedback", error.message + " Повторите загрузку справки.", "error");
+    } finally {
+      if (version === this.legalVersion) {
+        this.legalLoading = false;
+        byId("legal-refresh").disabled = !this.connected;
+        byId("legal-content").removeAttribute("aria-busy");
+      }
     }
   }
 

@@ -60,3 +60,35 @@ test("invalid JSON and network outages remain distinguishable", async t => {
   fetch.mock.mockImplementation(async () => { throw new TypeError("network"); });
   await assert.rejects(getSystem("secret"), { code: "network_error" });
 });
+
+test("every ambiguous POST failure is marked uncertain and is sent only once", async t => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new TypeError("offline"); });
+  for (const implementation of [
+    async () => { throw new TypeError("offline"); },
+    async () => new Response("invalid JSON", { status: 202 }),
+    async () => new Response("gateway", { status: 502 }),
+    async () => new Response("proxy unavailable", { status: 503 }),
+  ]) {
+    fetch.mock.mockImplementation(implementation);
+    const before = fetch.mock.callCount();
+    await assert.rejects(apiRequest("/upload", "secret", { method: "POST" }), error => error.outcomeUnknown === true && /журнал/.test(error.message));
+    assert.equal(fetch.mock.callCount(), before + 1);
+  }
+  fetch.mock.mockImplementation(() => new Promise(() => {}));
+  await assert.rejects(apiRequest("/upload", "secret", { method: "POST", timeoutMs: 10 }), { outcomeUnknown: true, code: "request_timeout" });
+});
+
+test("definite POST rejections and safe GET failures are not upload uncertainties", async t => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => new Response("{}", { status: 422 }));
+  for (const status of [400, 401, 413, 415, 422, 429, 503, 507]) {
+    fetch.mock.mockImplementation(async () => new Response(JSON.stringify({ detail: { code: status === 503 ? "analyzer_unavailable" : status === 507 ? "storage_unavailable" : "rejected" } }), { status }));
+    await assert.rejects(apiRequest("/upload", "secret", { method: "POST" }), error => error.outcomeUnknown === false);
+  }
+  fetch.mock.mockImplementation(async () => { throw new TypeError("offline"); });
+  await assert.rejects(getSystem("secret"), error => error.outcomeUnknown === false);
+});
+
+test("a stalled rejection body cannot turn a received HTTP rejection into uncertain acceptance", async t => {
+  t.mock.method(globalThis, "fetch", async () => ({ ok: false, status: 422, json: () => new Promise(() => {}) }));
+  await assert.rejects(apiRequest("/upload", "secret", { method: "POST", timeoutMs: 10 }), error => error.status === 422 && error.outcomeUnknown === false && !/могла быть принята/.test(error.message));
+});

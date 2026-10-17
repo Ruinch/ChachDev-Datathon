@@ -29,11 +29,14 @@ function navigation(initial = "http://local/#checks") {
 
 function scheduler() {
   const tasks = new Map();
+  const delays = [];
   let nextId = 1;
   return {
-    setTimeout(callback) { const id = nextId++; tasks.set(id, callback); return id; },
+    setTimeout(callback, delay) { const id = nextId++; tasks.set(id, callback); delays.push(delay); return id; },
     clearTimeout(id) { tasks.delete(id); },
     async tick() { const batch = [...tasks.values()]; tasks.clear(); for (const callback of batch) await callback(); await settle(); },
+    get pending() { return tasks.size; },
+    delays,
   };
 }
 
@@ -46,6 +49,7 @@ function setup(t, overrides = {}, url) {
     async getJobs(key, filters) { calls.history.push({ key, filters }); return { items: [], total: 0 }; },
     async getSource() { return new Blob(["video"]); },
     async getRules() { return { items: [] }; },
+    async getLegalGuide() { return { version: "1", procedures: [] }; },
     ...overrides,
   };
   const nav = navigation(url);
@@ -254,4 +258,247 @@ test("an unauthorized response clears protected data and cancels other requests 
   assert.equal(session.state.job, null);
   assert.equal(session.state.jobId, null);
   assert.equal(session.state.pendingJob, ID);
+});
+
+test("the reference guide remains available when the model and executable rules are not ready", async t => {
+  const expected = { version: "1", procedures: [] };
+  const { session } = setup(t, {
+    getSystem: async () => ({ ...READY, ready: false }),
+    getLegalGuide: async (key, signal) => { assert.equal(key, "secret"); assert.equal(signal.aborted, false); return expected; },
+  });
+  session.setKey("secret");
+  await session.connect();
+  assert.equal(session.state.system.ready, false);
+  assert.deepEqual(await session.legalGuide(), expected);
+});
+
+test("a legal guide response from a forgotten session cannot be used after reconnecting", async t => {
+  const old = deferred();
+  const { session } = setup(t, { getLegalGuide: () => old.promise });
+  session.setKey("first");
+  await session.connect();
+  const stale = assert.rejects(session.legalGuide(), { name: "AbortError" });
+  session.forget();
+  session.setKey("second");
+  await session.connect();
+  old.resolve({ version: "old", procedures: [] });
+  await stale;
+  assert.equal(session.state.connected, true);
+});
+
+test("an unauthorized guide request clears protected results through the shared session guard", async t => {
+  const { session } = setup(t, { getLegalGuide: async () => { throw Object.assign(new Error("invalid key"), { status: 401 }); } });
+  session.setKey("secret");
+  await session.connect();
+  await session.openJob(ID);
+  await assert.rejects(session.legalGuide(), { status: 401 });
+  assert.equal(session.state.connected, false);
+  assert.equal(session.state.job, null);
+  assert.equal(session.state.pendingJob, ID);
+});
+
+test("a transient poll failure recovers automatically without navigating or duplicating the request", async t => {
+  let requests = 0;
+  const { session, clock } = setup(t, { getJob: async id => {
+    requests++;
+    if (requests === 2) throw Object.assign(new Error("offline"), { code: "network_error", status: 0 });
+    return { job_id: id, status: requests === 1 ? "processing" : "done" };
+  } });
+  session.setKey("secret");
+  await session.connect();
+  await session.openJob(ID);
+  session.navigate("checks");
+  await clock.tick();
+  assert.equal(session.state.busy, true);
+  assert.equal(session.state.pollRetry.attempt, 1);
+  assert.equal(clock.delays.at(-1), 1000);
+  await clock.tick();
+  assert.equal(requests, 3);
+  assert.equal(session.state.status, "done");
+  assert.equal(session.state.busy, false);
+  assert.equal(session.state.error, null);
+  assert.equal(session.state.pollRetry, null);
+  assert.equal(session.state.page, "checks");
+  assert.equal(clock.pending, 0);
+});
+
+test("poll retries have a finite backoff budget and a manual refresh starts a fresh budget", async t => {
+  let requests = 0;
+  const { session, clock } = setup(t, { getJob: async id => {
+    requests++;
+    if (requests === 1) return { job_id: id, status: "processing" };
+    throw Object.assign(new Error("gateway unavailable"), { status: 502 });
+  } });
+  session.setKey("secret");
+  await session.connect();
+  await session.openJob(ID);
+  for (let i = 0; i < 5; i++) await clock.tick();
+  assert.equal(requests, 6);
+  assert.deepEqual(clock.delays.slice(1), [1000, 2000, 4000, 8000]);
+  assert.equal(clock.pending, 0);
+  assert.equal(session.state.pollRetry.exhausted, true);
+  assert.equal(session.state.busy, true);
+  await session.refreshJob();
+  assert.equal(requests, 7);
+  assert.equal(session.state.pollRetry.attempt, 1);
+  assert.equal(session.state.pollRetry.exhausted, false);
+  assert.equal(clock.pending, 1);
+});
+
+test("an active automatic retry shows request progress and cannot be duplicated or reset mid-flight", async t => {
+  let requests = 0;
+  const pending = deferred();
+  const { session, clock } = setup(t, { getJob: async () => {
+    requests++;
+    if (requests === 1) throw Object.assign(new Error("offline"), { status: 0 });
+    return pending.promise;
+  } });
+  session.setKey("secret");
+  await session.connect();
+  await session.openJob(ID);
+  const automatic = clock.tick();
+  await settle();
+  assert.equal(session.state.pollRetry.delayMs, 0);
+  assert.equal(session.state.pollRetry.attempt, 1);
+  const manual = session.refreshJob();
+  assert.equal(session.refreshJob(), manual);
+  assert.equal(requests, 2);
+  pending.reject(Object.assign(new Error("still offline"), { status: 0 }));
+  await Promise.all([automatic, manual]);
+  assert.equal(session.state.pollRetry.attempt, 2);
+  assert.equal(session.state.pollRetry.delayMs, 2000);
+});
+
+test("an authoritative missing job is not retried", async t => {
+  const { session, clock } = setup(t, { getJob: async () => { throw Object.assign(new Error("missing"), { status: 404 }); } });
+  session.setKey("secret");
+  await session.connect();
+  await session.openJob(ID);
+  assert.equal(clock.pending, 0);
+  assert.equal(session.state.pollRetry, null);
+  assert.equal(session.state.busy, false);
+});
+
+test("forgetting, changing a job, or disposing cancels scheduled status retries", async t => {
+  for (const cancel of [session => session.forget(), session => session.openJob(OTHER), session => session.dispose()]) {
+    let requests = 0;
+    const { session, clock } = setup(t, { getJob: async id => {
+      requests++;
+      if (id === OTHER) return { job_id: id, status: "done" };
+      throw Object.assign(new Error("offline"), { status: 0 });
+    } });
+    session.setKey("secret");
+    await session.connect();
+    await session.openJob(ID);
+    assert.equal(clock.pending, 1);
+    await cancel(session);
+    const before = requests;
+    await clock.tick();
+    assert.equal(requests, before);
+    assert.equal(clock.pending, 0);
+  }
+});
+
+test("an unauthorized parallel request cancels a pending poll retry and clears its notice", async t => {
+  let requests = 0;
+  const { session, clock } = setup(t, {
+    getJob: async () => { requests++; throw Object.assign(new Error("offline"), { status: 0 }); },
+    getRules: async () => { throw Object.assign(new Error("invalid key"), { status: 401 }); },
+  });
+  session.setKey("secret");
+  await session.connect();
+  await session.openJob(ID);
+  await assert.rejects(session.rules(), { status: 401 });
+  await clock.tick();
+  assert.equal(requests, 1);
+  assert.equal(session.state.pollRetry, null);
+  assert.equal(session.state.connected, false);
+});
+
+test("uncertain upload outcomes keep the file and direct the user to history without resubmitting", async t => {
+  for (const failure of [
+    Object.assign(new Error("offline"), { code: "network_error", status: 0, outcomeUnknown: true }),
+    Object.assign(new Error("invalid JSON"), { code: "invalid_response", status: 202, outcomeUnknown: true }),
+    Object.assign(new Error("timeout"), { code: "request_timeout", status: 0, outcomeUnknown: true }),
+    Object.assign(new Error("gateway failure"), { status: 502, outcomeUnknown: true }),
+  ]) {
+    let requests = 0;
+    const { session } = setup(t, { startAnalysis: async () => { requests++; throw failure; } });
+    session.setKey("secret");
+    session.selectFile(FILE);
+    await assert.rejects(session.start(2), error => /журнал/.test(error.message));
+    assert.equal(session.state.uploadUncertain, true);
+    assert.equal(session.state.selectedFile, FILE);
+    assert.equal(session.state.jobId, null);
+    assert.equal(session.state.busy, false);
+    assert.equal(requests, 1);
+  }
+});
+
+test("a malformed upload acceptance is uncertain while a definite rejection is not", async t => {
+  for (const acceptance of [null, {}, { status: "processing", job_id: "wrong" }]) {
+    const { session } = setup(t, { startAnalysis: async () => acceptance });
+    session.setKey("secret");
+    session.selectFile(FILE);
+    await assert.rejects(session.start(2), error => /журнал/.test(error.message));
+    assert.equal(session.state.uploadUncertain, true);
+    session.selectFile(FILE);
+    assert.equal(session.state.uploadUncertain, false);
+  }
+  const { session } = setup(t, { startAnalysis: async () => { throw Object.assign(new Error("invalid video"), { status: 422 }); } });
+  session.setKey("secret");
+  session.selectFile(FILE);
+  await assert.rejects(session.start(2), { status: 422 });
+  assert.equal(session.state.uploadUncertain, false);
+});
+
+test("a parallel unauthorized request preserves uncertain acceptance after cancelling an active upload", async t => {
+  let uploads = 0;
+  let uploadAborted = false;
+  const { session } = setup(t, {
+    startAnalysis: (_file, _key, signal) => {
+      uploads++;
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => {
+        uploadAborted = true;
+        reject(new DOMException("cancelled", "AbortError"));
+      }, { once: true }));
+    },
+    getRules: async () => { throw Object.assign(new Error("invalid key"), { status: 401 }); },
+  });
+  session.setKey("first");
+  session.selectFile(FILE);
+  const upload = session.start(2);
+  await settle();
+  assert.equal(session.state.status, "uploading");
+  await assert.rejects(session.rules(), { status: 401 });
+  assert.equal(await upload, false);
+  assert.equal(uploadAborted, true);
+  assert.equal(uploads, 1);
+  assert.equal(session.state.uploadUncertain, true);
+  assert.equal(session.state.selectedFile, FILE);
+  assert.equal(session.state.connected, false);
+  assert.equal(session.state.job, null);
+  assert.equal(session.state.jobId, null);
+  session.forget();
+  assert.equal(session.state.uploadUncertain, true);
+  session.setKey("second");
+  assert.equal(session.state.uploadUncertain, true);
+  await session.connect();
+  assert.equal(session.state.uploadUncertain, true);
+  assert.equal(session.state.job, null);
+  session.selectFile(FILE);
+  assert.equal(session.state.uploadUncertain, false);
+});
+
+test("an unauthorized response from the upload itself is a definite rejection", async t => {
+  const { session } = setup(t, {
+    startAnalysis: async () => { throw Object.assign(new Error("invalid key"), { status: 401 }); },
+  });
+  session.setKey("secret");
+  session.selectFile(FILE);
+  assert.equal(await session.start(2), false);
+  assert.equal(session.state.uploadUncertain, false);
+  assert.equal(session.state.connected, false);
+  assert.equal(session.state.jobId, null);
+  assert.equal(session.state.error.status, 401);
 });

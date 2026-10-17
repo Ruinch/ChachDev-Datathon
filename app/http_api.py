@@ -8,7 +8,8 @@ from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 
 from app.api_schemas import ApiErrorResponse, JobHistoryResponse, JobResponse, ProcessingJobResponse, RuleCatalogResponse, SystemStatusResponse
-from app.job_service import JobService
+from app.job_service import JobService, ServiceError
+from app.legal_guide import LegalGuide, LegalGuideUnavailableError, load_legal_guide
 
 
 API_AUTH = Security(APIKeyHeader(
@@ -57,6 +58,20 @@ def api_router(service: JobService) -> APIRouter:
     )
     def get_rules():
         return service.rules()
+
+    @router.get(
+        "/api/v1/legal-guide", response_model=None, dependencies=[API_AUTH],
+        responses={
+            **AUTH_ERRORS,
+            200: {"model": LegalGuide, "description": "Current explanatory legal guide; does not activate analysis rules or establish a historical result binding"},
+            503: {"model": ApiErrorResponse, "description": "The local legal guide is missing or invalid"},
+        },
+    )
+    def get_legal_guide():
+        try:
+            return load_legal_guide().model_dump(mode="json")
+        except LegalGuideUnavailableError as exc:
+            raise ServiceError(503, "invalid_legal_guide", "The local legal guide is missing or invalid") from exc
 
     @router.post(
         "/api/v1/analyze", status_code=202, response_model=None, dependencies=[API_AUTH],

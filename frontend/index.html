@@ -61,6 +61,10 @@
           </section>
           <section id="view-analysis" data-view="analysis" aria-labelledby="analysis-title" hidden>
             <div class="page-heading"><div><p class="section-kicker">Анализ видеозаписи</p><h1 id="analysis-title">Новая проверка</h1><p class="page-description">Загрузите запись кассовой операции. Результат включает события, таймкоды, исходные кадры и нормативные источники.</p></div><a class="text-button" href="#checks">← К журналу</a></div>
+            <div class="notice upload-uncertain" id="upload-uncertain" data-tone="warning" role="status" hidden>
+              <p>Не удалось подтвердить создание задачи. Запись могла быть принята сервисом. Перед повторной отправкой проверьте журнал.</p>
+              <a class="text-button" href="#checks">Проверить журнал <span aria-hidden="true">→</span></a>
+            </div>
       <div class="workspace">
         <section class="intake" aria-labelledby="upload-title">
           <div class="section-heading">
@@ -203,11 +207,19 @@
 
           </section>
           <section id="view-rules" data-view="rules" aria-labelledby="rules-title" hidden>
-            <div class="page-heading"><div><p class="section-kicker">Каталог правил</p><h1 id="rules-title">Процедуры проверки</h1><p class="page-description">Перечень процедур, условия их применения и нормативные источники, используемые при анализе.</p></div></div>
-            <p class="notice" id="rules-feedback" role="status" hidden></p>
-            <div class="locked-state service-panel" id="rules-locked"><span class="empty-state-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M16 7c-4-3-8-3-12-2v21c4-1 8-1 12 2 4-3 8-3 12-2V5c-4-1-8-1-12 2Zm0 0v21" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span><h2>Каталог доступен после подключения</h2><p>Подключитесь к сервису, чтобы увидеть актуальные процедуры и их состояние.</p><a class="button button-primary" href="#connection">Подключить сервис <span aria-hidden="true">→</span></a></div>
-            <div class="rules-summary" id="rules-summary" hidden></div>
-            <div class="rules-list" id="rules-list"></div>
+            <div class="page-heading"><div><p class="section-kicker">Процедуры и источники</p><h1 id="rules-title">Процедуры проверки</h1><p class="page-description">Как соблюдать кассовые процедуры, какой контекст нужен для вывода и на какие документы опирается проверка.</p></div></div>
+            <div class="locked-state service-panel" id="rules-locked"><span class="empty-state-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M16 7c-4-3-8-3-12-2v21c4-1 8-1 12 2 4-3 8-3 12-2V5c-4-1-8-1-12 2Zm0 0v21" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span><h2>Процедуры доступны после подключения</h2><p>Подключитесь к сервису, чтобы открыть правовую справку и каталог анализа.</p><a class="button button-primary" href="#connection">Подключить сервис <span aria-hidden="true">→</span></a></div>
+            <section class="legal-guide service-panel" id="legal-guide" aria-labelledby="legal-title" hidden>
+              <div class="guide-heading"><div><p class="section-kicker">Правовая справка</p><h2 id="legal-title">Правовые основания</h2></div><button class="secondary-button" id="legal-refresh" type="button" disabled>Обновить справку</button></div>
+              <p class="notice" id="legal-feedback" role="status" hidden></p>
+              <div id="legal-content"></div>
+            </section>
+            <section id="rules-catalog" aria-labelledby="rules-catalog-title" hidden>
+              <div class="guide-heading"><div><p class="section-kicker">Каталог анализа</p><h2 id="rules-catalog-title">Процедуры анализатора</h2><p class="page-description">Состояние процедур, которые могут использоваться при обработке видео. Справка выше не меняет их доступность.</p></div><button class="secondary-button" id="rules-refresh" type="button" disabled>Обновить каталог</button></div>
+              <p class="notice" id="rules-feedback" role="status" hidden></p>
+              <div class="rules-summary" id="rules-summary" hidden></div>
+              <div class="rules-list" id="rules-list"></div>
+            </section>
           </section>
           <section id="view-connection" data-view="connection" aria-labelledby="connection-title" hidden>
             <div class="page-heading"><div><p class="section-kicker">Доступ и состояние</p><h1 id="connection-title">Подключение к сервису</h1><p class="page-description">Настройте доступ к проверкам и посмотрите, готов ли сервис к обработке видеозаписей.</p></div></div>
