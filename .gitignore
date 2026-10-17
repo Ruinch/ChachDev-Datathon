@@ -1,0 +1,23 @@
+# Local jobs, uploaded videos, and generated evidence stay on this machine.
+.local_data/
+data/
+
+# Credentials and Python environment.
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Dataset archives, videos, and model weights must not be uploaded accidentally.
+*.mov
+*.mp4
+*.avi
+*.zip
+*.xlsx
+*.safetensors
+*.pt
+*.pth
+*.onnx

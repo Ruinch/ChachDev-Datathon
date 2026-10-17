@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Проверка кассовых процедур</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="site-header">
+        <div class="brand" aria-label="Кассовый контроль">
+          <span class="brand-mark" aria-hidden="true"><span></span></span>
+          <span>Кассовый контроль</span>
+        </div>
+        <span class="header-tag">Локальная обработка видео</span>
+      </header>
+
+      <main>
+        <section class="intro" aria-labelledby="page-title">
+          <div class="eyebrow"><span class="eyebrow-dot"></span> Проверка кассовых процедур</div>
+          <h1 id="page-title">От записи к проверяемому эпизоду.</h1>
+          <p>Загрузите видео кассы. Сервис покажет ход обработки, а после подключения анализатора — найденные события с таймкодами, кадрами и ссылками на правила.</p>
+        </section>
+
+        <div class="work-grid">
+          <section class="panel upload-panel" aria-labelledby="upload-title">
+            <div class="panel-heading">
+              <span class="step-number">01</span>
+              <div>
+                <h2 id="upload-title">Новая проверка</h2>
+                <p>Одно видео в формате .mov</p>
+              </div>
+            </div>
+
+            <form id="analyze-form" novalidate>
+              <label class="field-label" for="api-key">Ключ доступа</label>
+              <input id="api-key" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="Введите X-API-Key" required />
+              <p class="field-help">Ключ используется только для запросов к этому сервису и не сохраняется в браузере.</p>
+
+              <input class="visually-hidden" id="video-file" name="file" type="file" accept=".mov,video/quicktime" required />
+              <label class="file-picker" for="video-file">
+                <span class="file-icon" aria-hidden="true">↑</span>
+                <span class="file-title">Выбрать видео</span>
+                <span class="file-meta" id="file-label">Файл .mov</span>
+              </label>
+
+              <button class="primary-button" id="submit-button" type="submit">
+                <span>Начать проверку</span>
+                <span aria-hidden="true">↗</span>
+              </button>
+              <p class="form-error" id="form-error" role="alert" hidden></p>
+            </form>
+          </section>
+
+          <section class="panel status-panel" aria-labelledby="status-title">
+            <div class="panel-heading">
+              <span class="step-number">02</span>
+              <div>
+                <h2 id="status-title">Ход обработки</h2>
+                <p>Состояние текущей задачи</p>
+              </div>
+            </div>
+            <div class="empty-state" id="status-empty">
+              <span class="empty-glyph" aria-hidden="true">◷</span>
+              <p>Загрузите запись, чтобы увидеть состояние проверки.</p>
+            </div>
+            <div id="status-content" hidden>
+              <div class="status-line">
+                <span class="status-indicator" id="status-indicator" aria-hidden="true"></span>
+                <strong id="status-label" aria-live="polite"></strong>
+              </div>
+              <dl class="status-details">
+                <div><dt>Файл</dt><dd id="status-file"></dd></div>
+                <div><dt>Номер задачи</dt><dd class="mono" id="status-job"></dd></div>
+              </dl>
+              <p class="status-note" id="status-note"></p>
+              <button class="secondary-button" id="retry-button" type="button" hidden>Проверить статус ещё раз</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel results-panel" id="results-panel" aria-labelledby="results-title" hidden>
+          <div class="panel-heading">
+            <span class="step-number">03</span>
+            <div>
+              <h2 id="results-title">Результат</h2>
+              <p id="results-summary"></p>
+            </div>
+          </div>
+          <div id="events-list" class="events-list"></div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <span>Кадры и таймкоды должны извлекаться из исходного видео.</span>
+        <span>Решение требует проверки человеком.</span>
+      </footer>
+    </div>
+  </body>
+</html>
