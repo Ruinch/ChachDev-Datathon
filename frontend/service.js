@@ -163,13 +163,15 @@ export class ServiceWorkspace {
     details.replaceChildren();
     const grid = node("dl", "system-grid");
     const values = [
-      ["Анализатор", info.analyzer?.configured ? "Подключён" : "Не подключён"],
+      ["Анализатор", info.analyzer?.configured ? "Настроен" : "Не настроен"],
       ["Активные процедуры", String(info.analyzer?.enabled_rule_ids?.length || 0)],
       ["Обработка видео", info.tools?.ffmpeg && info.tools?.ffprobe ? "Доступна" : "Недоступна"],
       ["Размер записи", formatSize(info.limits?.max_upload_bytes)],
       ["Длительность записи", formatTime(info.limits?.max_video_duration_sec)],
       ["Лимит анализа", formatTime(info.limits?.job_timeout_sec)],
     ];
+    if (info.analyzer?.runtime) values.splice(1, 0, ["Локальная модель", info.analyzer.runtime.ready ? "Отвечает" : info.analyzer.runtime.unavailable_reason?.code === "ml_dependencies_unavailable"
+      ? "Нет зависимостей" : info.analyzer.runtime.unavailable_reason?.code === "analyzer_config_invalid" ? "Ошибка настройки" : "Не отвечает"]);
     for (const [label, value] of values) {
       const item = node("div", "system-item");
       item.append(node("dt", "system-label", label), node("dd", "system-value", value));

@@ -26,7 +26,7 @@ if ([string]::IsNullOrWhiteSpace($env:APP_API_KEY)) {
 Push-Location -LiteralPath $projectRoot
 try {
     Assert-ProjectDependencies -PythonPath $pythonPath -ProjectRoot $projectRoot
-    Write-Host 'Python 3.13, pinned service dependencies, application settings and five-minute timeout budget: OK'
+    Write-Host 'Python 3.12/3.13, pinned service dependencies, application settings and five-minute timeout budget: OK'
 
     $ffmpegPath = if ($env:APP_FFMPEG_BIN) { $env:APP_FFMPEG_BIN } else { 'ffmpeg' }
     $ffprobePath = if ($env:APP_FFPROBE_BIN) { $env:APP_FFPROBE_BIN } else { 'ffprobe' }

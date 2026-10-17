@@ -28,6 +28,8 @@ const messages = {
   service_busy: "Сервис уже обрабатывает запись. Повторите загрузку после её завершения.",
   busy: "Сервис уже обрабатывает запись. Повторите загрузку после её завершения.",
   analyzer_unavailable: "Локальный анализатор ещё не подключён.",
+  local_model_unavailable: "Локальная модель не отвечает. Запустите её и обновите состояние сервиса.",
+  ml_dependencies_unavailable: "На сервере не установлены или не работают зависимости локального анализатора.",
   analyzer_config_invalid: "Не удалось загрузить настройки анализатора. Проверьте конфигурацию сервера.",
   rules_unavailable: "Правила проверки ещё не активированы.",
   ffmpeg_unavailable: "На сервере недоступен инструмент обработки видео.",
@@ -41,6 +43,7 @@ const uploadRejections = new Set([
   "analyzer_unavailable", "analyzer_config_invalid", "analysis_not_ready", "invalid_rule_catalog",
   "video_tools_unavailable", "rules_unavailable", "ffmpeg_unavailable", "ffprobe_unavailable",
   "server_busy", "service_busy", "busy", "storage_unavailable",
+  "local_model_unavailable", "ml_dependencies_unavailable",
 ]);
 
 async function responseError(response) {

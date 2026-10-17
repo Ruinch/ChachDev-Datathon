@@ -30,8 +30,8 @@ if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
 
 $versionCheck = @'
 import sys
-if sys.version_info[:2] != (3, 13):
-    raise SystemExit("Existing .venv is not Python 3.13. Preserve any ML environment and create the validated service environment before setup.")
+if sys.version_info[:2] not in {(3, 12), (3, 13)}:
+    raise SystemExit("Existing .venv requires Python 3.12 or 3.13. Preserve other environments before setup.")
 '@
 $versionCheck | & $pythonPath -
 if ($LASTEXITCODE -ne 0) { throw 'Unsupported virtual environment. Dependencies and configuration were not changed.' }

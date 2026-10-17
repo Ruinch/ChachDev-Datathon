@@ -1,0 +1,31 @@
+{
+  "llama_release": "b11669",
+  "model_repo": "ggml-org/Qwen3-VL-2B-Instruct-GGUF",
+  "model_revision": "ea6a11058182570be6436b9a2e4ee7f7b49f908d",
+  "files": [
+    {
+      "name": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+      "kind": "runtime"
+    },
+    {
+      "name": "llama-b11669-bin-win-cuda-12.4-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-win-cuda-12.4-x64.zip",
+      "sha256": "c2da1f73ed176ae093ac5aceb978a7b167a16113f6d74c6789eeaee2135cb8dc",
+      "kind": "runtime"
+    },
+    {
+      "name": "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+      "url": "https://huggingface.co/ggml-org/Qwen3-VL-2B-Instruct-GGUF/resolve/ea6a11058182570be6436b9a2e4ee7f7b49f908d/Qwen3-VL-2B-Instruct-Q8_0.gguf",
+      "sha256": "b7802e29f71a9e5b5e3f83f613df898a2204342dcea71a231ea501d481813c39",
+      "kind": "model"
+    },
+    {
+      "name": "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
+      "url": "https://huggingface.co/ggml-org/Qwen3-VL-2B-Instruct-GGUF/resolve/ea6a11058182570be6436b9a2e4ee7f7b49f908d/mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
+      "sha256": "69066c8f279ec85ff48ab4059f6ebba0d2932ca57667f2bbdac7d9805bca9e7b",
+      "kind": "model"
+    }
+  ]
+}

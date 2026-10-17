@@ -76,6 +76,9 @@ function chooseFile(file) {
 function readinessMessage(info) {
   const reasons = [];
   if (!info.analyzer?.configured) reasons.push("локальная модель ещё не подключена");
+  if (info.analyzer?.runtime?.ready === false) reasons.push(info.analyzer.runtime.unavailable_reason?.code === "ml_dependencies_unavailable"
+    ? "зависимости локального анализатора недоступны" : info.analyzer.runtime.unavailable_reason?.code === "analyzer_config_invalid"
+      ? "настройки локальной модели некорректны" : "локальная модель не отвечает");
   if (!info.analyzer?.rules_ready) reasons.push("правила проверки ещё не активированы");
   if (!info.tools?.ffmpeg || !info.tools?.ffprobe) reasons.push("инструменты обработки видео недоступны");
   if (reasons.length) return "Сервис пока не готов: " + reasons.join("; ") + ". Предпросмотр видео доступен.";

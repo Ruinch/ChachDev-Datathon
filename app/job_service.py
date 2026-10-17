@@ -9,13 +9,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import BinaryIO, Callable, Iterator
+from typing import AsyncIterator, BinaryIO, Callable
 from uuid import UUID, uuid4
 
 from app.analyzer import UnconfiguredAnalyzer
+from app.analyzer_readiness import analyzer_runtime_status
 from app.config import Settings
 from app.rules import load_rule_catalog
 from app.storage import JobStore
@@ -126,6 +127,7 @@ class JobService:
         tools = {name: self._tools_available(binary) for name, binary in (
             ("ffmpeg", self._settings.ffmpeg_bin), ("ffprobe", self._settings.ffprobe_bin),
         )}
+        runtime = analyzer_runtime_status(self._settings.analyzer_factory)
         reason = None
         if not configured:
             reason = {"code": "analyzer_unavailable", "message": "A local video analyzer has not been configured"}
@@ -135,10 +137,13 @@ class JobService:
             reason = {"code": "analysis_not_ready", "message": "No verified rules have been enabled"}
         elif not all(tools.values()):
             reason = {"code": "video_tools_unavailable", "message": "Local FFmpeg and FFprobe are required"}
+        elif runtime is not None and not runtime["ready"]:
+            reason = runtime["unavailable_reason"]
         return {
             "ready": reason is None,
             "analyzer": {
                 "configured": configured, "enabled_rule_ids": enabled,
+                "runtime": runtime,
                 "rules_ready": bool(enabled) and not self._catalog_error,
                 "rules": [{"id": rule.id, "event_type": rule.event_type} for rule in self._catalog.rules if rule.enabled]
                 if self._catalog else [],
@@ -168,9 +173,11 @@ class JobService:
         } for rule in self._catalog.rules]
         return {"items": items, "enabled_count": len(self._catalog.enabled_rule_ids), "total": len(items)}
 
-    @contextmanager
-    def admit_upload(self) -> Iterator[_UploadAdmission]:
-        failure = self.status()["unavailable_reason"]
+    @asynccontextmanager
+    async def admit_upload(self) -> AsyncIterator[_UploadAdmission]:
+        # Readiness can contact the loopback model. Do not block HTTP navigation
+        # or reserve the upload slot until the bounded check has completed.
+        failure = (await asyncio.to_thread(self.status))["unavailable_reason"]
         if failure is not None:
             raise ServiceError(503, failure["code"], failure["message"])
         if not self._runner.reserve():

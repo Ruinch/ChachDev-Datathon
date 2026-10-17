@@ -84,8 +84,8 @@ import importlib.metadata
 import pathlib
 import sys
 
-if sys.version_info[:2] != (3, 13):
-    raise SystemExit("The validated Windows service environment requires Python 3.13; recreate .venv with that version.")
+if sys.version_info[:2] not in {(3, 12), (3, 13)}:
+    raise SystemExit("The validated Windows service/ML environment requires Python 3.12 or 3.13.")
 errors = []
 for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
     line = line.strip()

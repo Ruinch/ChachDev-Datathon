@@ -42,7 +42,7 @@ class ApiGuard:
             return
 
         try:
-            with self.service.admit_upload() as admission:
+            async with self.service.admit_upload() as admission:
                 self._check_content_length(headers)
                 scope.setdefault("state", {})["upload_admission"] = admission
                 await self.app(scope, self._limited_receive(receive), private_send)

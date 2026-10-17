@@ -92,3 +92,12 @@ test("a stalled rejection body cannot turn a received HTTP rejection into uncert
   t.mock.method(globalThis, "fetch", async () => ({ ok: false, status: 422, json: () => new Promise(() => {}) }));
   await assert.rejects(apiRequest("/upload", "secret", { method: "POST", timeoutMs: 10 }), error => error.status === 422 && error.outcomeUnknown === false && !/могла быть принята/.test(error.message));
 });
+
+test("model readiness refusals explain the cause without claiming the upload was accepted", async t => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => new Response("{}", { status: 503 }));
+  for (const code of ["local_model_unavailable", "ml_dependencies_unavailable", "analyzer_config_invalid"]) {
+    fetch.mock.mockImplementation(async () => new Response(JSON.stringify({ detail: { code, message: "Internal message" } }), { status: 503 }));
+    await assert.rejects(apiRequest("/api/v1/analyze", "secret", { method: "POST" }), error =>
+      error.code === code && error.outcomeUnknown === false && /модел|анализатор/.test(error.message) && !/Internal/.test(error.message));
+  }
+});

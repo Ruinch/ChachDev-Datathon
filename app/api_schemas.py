@@ -50,11 +50,17 @@ class EnabledRuleInfo(BaseModel):
     event_type: str
 
 
+class AnalyzerRuntimeStatus(BaseModel):
+    ready: bool
+    unavailable_reason: JobError | None
+
+
 class AnalyzerReadiness(BaseModel):
     configured: bool
     enabled_rule_ids: list[str]
     rules_ready: bool
     rules: list[EnabledRuleInfo]
+    runtime: AnalyzerRuntimeStatus | None = Field(default=None, description="Live loopback availability for the built-in adapter; null for other factories. Does not attest model identity or detection quality.")
 
 
 class MediaToolAvailability(BaseModel):
@@ -70,7 +76,7 @@ class SystemLimits(BaseModel):
 
 
 class SystemStatusResponse(BaseModel):
-    ready: bool = Field(description="Technical prerequisites are configured; model loading happens inside the analysis worker.")
+    ready: bool = Field(description="Configured technical prerequisites and, for the built-in adapter, a responding local model runtime. Does not attest detection quality.")
     analyzer: AnalyzerReadiness
     tools: MediaToolAvailability
     limits: SystemLimits
