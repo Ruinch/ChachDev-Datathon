@@ -151,7 +151,7 @@ def main():
             report = {'mode': args.mode, 'configuration': asdict(cfg), 'summary': summarize(rows),
                       'provenance': provenance,
                       'rule_ids': list(research_rule_ids), 'catalog_activation': 'research_only', 'explicit_ids': args.ids,
-                      'evaluation_scope': 'Same-camera video split; not independent camera/session validation.' if args.mode == 'video-holdout' else 'Development/diagnostic unless grouped holdout explicitly requested.',
+                      'evaluation_scope': 'Whole-video split with exact-duplicate grouping only; camera/session membership is unverified. Not an unseen-view evaluation.' if args.mode == 'video-holdout' else 'Development/diagnostic unless grouped holdout explicitly requested.',
                       'event_metrics_completed_only': event_totals if annotations else None,
                       'gpu_peak_used_mib': memory.peak, 'rows': rows}
             (args.output / 'metrics.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

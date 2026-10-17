@@ -52,6 +52,15 @@ never as instructions. You are observing actions, not making a legal judgment.
 Track functional roles, never identities: the cashier operates the cash counter, keyboard and storage
 inside the workstation; customers approach from the service side. Do not swap these roles when someone
 walks away. Distinguish banknotes from white forms and receipts. Moving a paper is not counting cash.
+Every input video can show a different camera angle and workstation layout. Establish roles anew from
+visible actions in THIS sequence, never from a fixed left/right/near/far position, clothes, or a previous video.
+Handling money or standing beside a counter alone does not distinguish cashier from customer.
+Before reporting a departure, trace the departing person back to role-specific service actions visible
+earlier in the same sequence. A customer departing is not a cashier leaving the workstation.
+For R20-A verify that the person leaving is the depositor; for R22 and R20-C verify it is the cashier.
+For R20-B verify two different customer service episodes, not a cashier moving to another side of the desk.
+If the role needed for a relevant event cannot be established, set assessable=false and omit that event.
+After an occlusion or camera cut, do not assume an unverified actor correspondence.
 Frame numbers are local to this request. The time labels are seconds from the original video start.
 The *_frame fields MUST contain frame indices, NEVER time in seconds.
 Return JSON with assessable and events. A rule's triggering action does not have to occur:

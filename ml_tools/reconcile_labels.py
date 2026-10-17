@@ -115,7 +115,7 @@ def review_seed(reconciled: dict) -> dict:
             for event in ai.get('proposed_events', []):
                 notes += f"\nПредложение ИИ: {event['rule_id']}, {event['start_sec']}–{event['end_sec']} с; {event['observation']}"
         annotations[row['id']] = {'sha256': row['sha256'], 'reviewed': False,
-            'source_group': 'organizer-single-camera', 'viewpoint': '', 'verdict': 'uncertain',
+            'source_group': '', 'viewpoint': '', 'verdict': 'uncertain',
             'events': [], 'notes': notes}
     return {'version': 1, 'annotations': annotations}
 
