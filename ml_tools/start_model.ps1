@@ -3,6 +3,7 @@ param([ValidateSet('2b','4b','3.5-4b','3.5-9b','3.5-9b-q3')][string]$Model = '3.
       [ValidateRange(64,4096)][int]$ImageMinTokens = 256,
       [ValidateRange(64,4096)][int]$ImageMaxTokens = 768,
       [ValidateRange(4096,32768)][int]$ContextSize = 16384,
+      [ValidateRange(0,32)][int]$ContextCheckpoints = 32,
       [ValidatePattern('^(all|[0-9]{1,2})$')][string]$GpuLayers = 'all',
       [ValidateRange(0,4096)][int]$ReasoningBudget = 0, [switch]$Background, [switch]$CheckOnly)
 $ErrorActionPreference = 'Stop'
@@ -29,6 +30,12 @@ $modelArguments = @('-m', $weights, '--mmproj', $projector, '--host', '127.0.0.1
     '--alias', 'local-cash-vlm', '--ctx-size', "$ContextSize", '--parallel', '1', '--gpu-layers', $GpuLayers,
     '--flash-attn', 'on', '--reasoning', $(if ($ReasoningBudget) { 'on' } else { 'off' }), '--image-min-tokens', "$ImageMinTokens",
     '--image-max-tokens', "$ImageMaxTokens", '--offline', '--log-disable')
+# Every video/window request is independent. cache_prompt=false in the HTTP
+# request only disables prefix reuse; b11669 otherwise retains an 8 GiB RAM
+# prompt cache. Keep that cache disabled, but preserve the original 32 context
+# checkpoints: positive checkpoint counts also change text prefill batch boundaries
+# in b11669. A research override of 0 requires a separate quality/memory comparison.
+$modelArguments += @('--cache-ram', '0', '--no-cache-idle-slots', '--ctx-checkpoints', "$ContextCheckpoints")
 # Keep pairs adjacent so Qwen's temporal encoder can merge consecutive frames.
 $modelArguments += @('--video-fps', '1', '--video-timestamp-interval', '2000')
 $videoTools = Join-Path $projectRoot '.local_tools/ffmpeg/bin'

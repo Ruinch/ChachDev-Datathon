@@ -1,5 +1,6 @@
 import { formatSize, formatTime } from "./media.js";
 import { renderLegalGuide } from "./legal.js";
+import { serviceMode, historyPresentation } from "./review-mode.js";
 
 const byId = id => document.getElementById(id);
 const labels = { checks: "Журнал проверок", new: "Новая проверка", review: "Разбор записи", rules: "Процедуры проверки", connection: "Подключение" };
@@ -73,8 +74,9 @@ export class ServiceWorkspace {
     this.updateAccess();
     byId("check-service").disabled = state.busy || state.connecting;
     byId("check-service").textContent = state.connected ? "Обновить состояние" : "Подключиться";
-    byId("connection-state").textContent = state.connecting ? "Проверяем…" : state.connected ? state.system?.ready ? state.system.busy ? "Занят" : "Готов" : "Не готов" : "Не подключён";
-    byId("connection-state").dataset.ready = String(Boolean(state.connected && state.system?.ready && !state.system?.busy));
+    const mode = serviceMode(state.system);
+    byId("connection-state").textContent = state.connecting ? "Проверяем…" : state.connected ? mode.ready ? state.system.busy ? "Занят" : mode.experimental ? "Экспериментальный разбор" : "Готов" : "Не готов" : "Не подключён";
+    byId("connection-state").dataset.ready = String(Boolean(state.connected && mode.ready && !state.system?.busy));
     if (state.error && state.error !== previous?.error) this.feedback("connection-feedback", state.error.message, "error");
     if (!state.connected) return;
     const entered = !previous?.connected || previous.page !== state.page;
@@ -149,21 +151,26 @@ export class ServiceWorkspace {
     const finished = ["done", "failed"].includes(this.session.state.job?.status);
     const busy = this.session.state.busy || Boolean(this.lastSummary?.processing ?? (!finished && this.session.state.system.busy));
     const state = byId("global-service-state");
-    state.textContent = this.session.state.system.ready ? busy ? "Идёт обработка" : "Готов к проверке" : "Анализ недоступен";
-    state.dataset.state = this.session.state.system.ready ? busy ? "busy" : "ready" : "warning";
+    const mode = serviceMode(this.session.state.system);
+    state.textContent = mode.ready ? busy ? "Идёт обработка" : mode.experimental ? "Экспериментальный разбор" : "Готов к проверке" : "Анализ недоступен";
+    state.dataset.state = mode.ready ? busy ? "busy" : mode.experimental ? "warning" : "ready" : "warning";
   }
 
   renderConnection(info) {
     byId("check-service").textContent = "Обновить состояние";
     const state = byId("global-service-state");
-    state.textContent = info.ready ? info.busy ? "Идёт обработка" : "Готов к проверке" : "Анализ недоступен";
-    state.dataset.state = info.ready ? info.busy ? "busy" : "ready" : "warning";
+    const mode = serviceMode(info);
+    state.textContent = mode.ready ? info.busy ? "Идёт обработка" : mode.experimental ? "Экспериментальный разбор" : "Готов к проверке" : "Анализ недоступен";
+    state.dataset.state = mode.ready ? info.busy ? "busy" : mode.experimental ? "warning" : "ready" : "warning";
     byId("history-refresh").disabled = false;
-    this.feedback("connection-feedback", "Доступ подтверждён. Журнал и сохранённые результаты доступны.", "success");
+    this.feedback("connection-feedback", mode.experimental
+      ? "Доступ подтверждён. Включён экспериментальный разбор: модель выдаёт наблюдения для ручной проверки, без вердикта о нарушении. Уверенность не откалибрована."
+      : "Доступ подтверждён. Журнал и сохранённые результаты доступны.", mode.experimental ? "" : "success");
     const details = byId("system-details");
     details.replaceChildren();
     const grid = node("dl", "system-grid");
     const values = [
+      ["Режим обработки", mode.experimental ? "Экспериментальный разбор" : "Проверка процедур"],
       ["Анализатор", info.analyzer?.configured ? "Настроен" : "Не настроен"],
       ["Активные процедуры", String(info.analyzer?.enabled_rule_ids?.length || 0)],
       ["Обработка видео", info.tools?.ffmpeg && info.tools?.ffprobe ? "Доступна" : "Недоступна"],
@@ -171,6 +178,7 @@ export class ServiceWorkspace {
       ["Длительность записи", formatTime(info.limits?.max_video_duration_sec)],
       ["Лимит анализа", formatTime(info.limits?.job_timeout_sec)],
     ];
+    if (mode.experimental) values.push(["Кандидатные процедуры", String(info.review.rule_ids?.length || 0)], ["Подтверждённый анализ", info.ready ? "Доступен" : "Отключён до приёмки качества"]);
     if (info.analyzer?.runtime) values.splice(1, 0, ["Локальная модель", info.analyzer.runtime.ready ? "Отвечает" : info.analyzer.runtime.unavailable_reason?.code === "ml_dependencies_unavailable"
       ? "Нет зависимостей" : info.analyzer.runtime.unavailable_reason?.code === "analyzer_config_invalid" ? "Ошибка настройки" : "Не отвечает"]);
     for (const [label, value] of values) {
@@ -244,13 +252,11 @@ export class ServiceWorkspace {
         const date = node("td");
         date.append(node("span", "history-meta", dateLabel(job.metadata?.created_at)));
         const state = node("td");
-        const completeNegative = job.verdict === "no_violation" && job.analysis_scope?.full_video_checked === true;
-        const uncertainResult = job.status === "done" && job.verdict !== "violation" && !completeNegative;
-        const label = job.status === "processing" ? "Обрабатывается" : job.status === "failed" ? "Без результата" : job.verdict === "violation" ? "Эпизоды для проверки" : completeNegative ? "События не найдены" : "Проверьте результат";
-        const badge = node("span", "history-status", label);
-        badge.dataset.status = uncertainResult ? "unknown" : job.status === "done" ? job.verdict : job.status;
+        const presentation = historyPresentation(job);
+        const badge = node("span", "history-status", presentation.label);
+        badge.dataset.status = presentation.status;
         state.append(badge);
-        if (job.status === "done" && job.analysis_scope?.full_video_checked === false) state.append(node("span", "history-meta", "Частичная проверка"));
+        if (presentation.note) state.append(node("span", "history-meta", presentation.note));
         const events = node("td", "history-events", job.status === "done" ? String(job.event_count) : "—");
         const action = node("td");
         const link = node("a", "history-open", "Открыть");
@@ -299,7 +305,9 @@ export class ServiceWorkspace {
     try {
       const result = await this.session.rules(this.rulesRequest.signal);
       if (version !== this.rulesVersion || !this.connected || this.page !== "rules") return;
-      byId("rules-summary").textContent = `Всего процедур: ${result.total}. Активных: ${result.enabled_count}. Отключённые процедуры не участвуют в анализе.`;
+      byId("rules-summary").textContent = `Всего процедур: ${result.total}. Подтверждённых активных: ${result.enabled_count}. ` + (serviceMode(this.session.state.system).experimental
+        ? "В экспериментальном разборе кандидатные процедуры используются только для гипотез, которые должен проверить человек."
+        : "Отключённые процедуры не участвуют в анализе.");
       byId("rules-summary").hidden = false;
       const cards = result.items.map(rule => {
         const card = node("article", "rule-card");
@@ -321,7 +329,7 @@ export class ServiceWorkspace {
           card.append(list);
         }
         if (rule.verification_note) card.append(node("p", "field-help", rule.verification_note));
-        else if (rule.verification !== "verified") card.append(node("p", "field-help", "Источник и условия применения ожидают подтверждения. Эта процедура не используется в результатах анализа."));
+        else if (rule.verification !== "verified") card.append(node("p", "field-help", "Источник, наблюдаемость и качество распознавания ожидают подтверждения. Процедура может использоваться только как гипотеза в явно обозначенном экспериментальном разборе."));
         if (rule.verified_on) card.append(node("p", "field-help", "Проверена: " + rule.verified_on));
         return card;
       });

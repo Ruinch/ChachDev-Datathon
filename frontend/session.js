@@ -1,4 +1,5 @@
 import * as http from "./api.js";
+import { serviceMode } from "./review-mode.js";
 
 const pages = new Set(["checks", "new", "review", "rules", "connection"]);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -321,12 +322,14 @@ export class WorkspaceSession {
     const version = this.#authVersion;
     try {
       const info = await this.connect();
-      if (!info.ready || info.busy) throw new Error(info.busy ? "Сервис обрабатывает другую запись. Дождитесь её завершения." : "Сервис пока не готов к анализу. Проверьте состояние подключения.");
+      const mode = serviceMode(info);
+      if (!mode.ready || info.busy) throw new Error(info.busy ? "Сервис обрабатывает другую запись. Дождитесь её завершения." : "Сервис пока не готов к анализу. Проверьте состояние подключения.");
       if (file.size > info.limits.max_upload_bytes) throw new Error("Размер записи превышает допустимый лимит сервиса.");
       if (Number.isFinite(duration) && duration > info.limits.max_video_duration_sec) throw new Error("Длительность записи превышает допустимый лимит сервиса.");
       this.#cancelJob();
       this.#update({ job: null, jobId: null, startedAt: Date.now(), status: "uploading" });
-      const job = await this.#request((key, signal) => this.api.startAnalysis(file, key, signal), undefined, { upload: true });
+      const job = await this.#request((key, signal) => mode.experimental
+        ? this.api.startReview(file, key, signal) : this.api.startAnalysis(file, key, signal), undefined, { upload: true });
       const id = normalizeJob(job?.job_id);
       if (!id || job.status !== "processing") throw new http.ApiError("Сервис вернул некорректный ответ создания задачи. Запись могла быть принята. Проверьте журнал перед повторной загрузкой.", "invalid_response", 202, { outcomeUnknown: true });
       this.#writeRoute("review", id);

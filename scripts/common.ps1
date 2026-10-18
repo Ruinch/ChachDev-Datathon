@@ -1,5 +1,33 @@
 Set-StrictMode -Version Latest
 
+function Resolve-LaptopProfilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$ProfilePath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ProfilePath)) {
+        return [IO.Path]::GetFullPath($ProfilePath)
+    }
+    # A non-secret local pointer keeps Store-app and ordinary PowerShell launches
+    # on the same profile, outside virtualized LOCALAPPDATA paths.
+    $pointerPath = Join-Path $ProjectRoot '.local_data\laptop-profile-path.txt'
+    if (Test-Path -LiteralPath $pointerPath) {
+        if (-not (Test-Path -LiteralPath $pointerPath -PathType Leaf)) {
+            throw 'The laptop profile pointer must be a file containing one absolute path.'
+        }
+        $candidate = (Get-Content -LiteralPath $pointerPath -Raw -Encoding UTF8)
+        if ($null -ne $candidate) { $candidate = $candidate.Trim() }
+        $isAbsolute = $candidate -match '^[A-Za-z]:[\\/]' -or $candidate -match '^\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)'
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not $isAbsolute -or $candidate -match '[\x00-\x1f<>"|?*]') {
+            throw 'Invalid laptop profile pointer. Expected one unquoted absolute directory path.'
+        }
+        try { return [IO.Path]::GetFullPath($candidate) }
+        catch { throw 'Invalid laptop profile pointer. Expected one absolute directory path.' }
+    }
+    return [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ForteBankDatathon\jury'))
+}
+
 function Import-ProjectEnvironment {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -34,6 +62,27 @@ function Get-ProjectPython {
         throw 'Project .venv is missing. Run scripts/setup.ps1 first.'
     }
     return $pythonPath
+}
+
+function Get-LocalModelImageTokenSettings {
+    # These are launch settings, not evidence of an existing process's identity.
+    $settings = @{ ImageMinTokens = 256; ImageMaxTokens = 768 }
+    foreach ($entry in @(
+        @('APP_LOCAL_MODEL_IMAGE_MIN_TOKENS', 'ImageMinTokens'),
+        @('APP_LOCAL_MODEL_IMAGE_MAX_TOKENS', 'ImageMaxTokens')
+    )) {
+        $value = [Environment]::GetEnvironmentVariable($entry[0], 'Process')
+        if ([string]::IsNullOrEmpty($value)) { continue }
+        $parsed = 0
+        if ($value -notmatch '^[0-9]+$' -or -not [int]::TryParse($value, [ref]$parsed) -or $parsed -lt 64 -or $parsed -gt 4096) {
+            throw ($entry[0] + ' must be an integer from 64 through 4096.')
+        }
+        $settings[$entry[1]] = $parsed
+    }
+    if ($settings.ImageMinTokens -gt $settings.ImageMaxTokens) {
+        throw 'APP_LOCAL_MODEL_IMAGE_MIN_TOKENS must not exceed APP_LOCAL_MODEL_IMAGE_MAX_TOKENS.'
+    }
+    return $settings
 }
 
 function Resolve-ProjectPath {

@@ -84,6 +84,7 @@ test("source status, missing reference, and untrusted markup cannot become a leg
 });
 
 function workspace(t, session) {
+  session.state = { system: null };
   const doc = documentStub();
   const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
   Object.defineProperty(globalThis, "document", { value: doc, configurable: true });

@@ -18,3 +18,14 @@ def synthetic_ml_catalog():
         observable_conditions=['Synthetic condition'], exclusions=['Synthetic exclusion'],
         verification_note='Test fixture only; no real normative verification.',
     ) for key in RULES])
+
+
+@pytest.fixture
+def isolated_evaluation_lock(tmp_path, monkeypatch):
+    """Unit-test CLIs must never contend with a real laptop evaluation."""
+    from functools import partial
+    from ml_tools import evaluate
+    from ml_tools.evaluation_lock import EvaluationLock
+
+    monkeypatch.setattr(evaluate, 'EvaluationLock',
+                        partial(EvaluationLock, directory=tmp_path / 'evaluation-locks'))

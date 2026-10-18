@@ -12,7 +12,8 @@ $trackedNames = @(
     'APP_API_KEY', 'APP_DATA_DIR', 'APP_RULE_CATALOG_PATH', 'APP_FFMPEG_BIN', 'APP_FFPROBE_BIN',
     'APP_MAX_UPLOAD_MB', 'APP_MAX_VIDEO_SECONDS', 'APP_UPLOAD_TIMEOUT_SECONDS',
     'APP_ANALYSIS_TIMEOUT_SECONDS', 'APP_FFPROBE_TIMEOUT_SECONDS', 'APP_ANALYZER_FACTORY',
-    'APP_LOCAL_MODEL_URL', 'APP_ML_INPUT_MODE', 'APP_ML_FRAMES', 'APP_ML_MAX_SIDE', 'APP_ML_BUDGET_SECONDS'
+    'APP_LOCAL_MODEL_URL', 'APP_ML_INPUT_MODE', 'APP_ML_FRAMES', 'APP_ML_MAX_SIDE', 'APP_ML_BUDGET_SECONDS',
+    'APP_LOCAL_MODEL_IMAGE_MIN_TOKENS', 'APP_LOCAL_MODEL_IMAGE_MAX_TOKENS'
 )
 $originalEnvironment = @{}
 foreach ($name in $trackedNames) {
@@ -93,6 +94,29 @@ try {
         if (-not $blocked) { throw 'Combined launcher accepted contradictory model ports.' }
 
         foreach ($name in $trackedNames) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+        $tokenDefaults = Get-LocalModelImageTokenSettings
+        if ($tokenDefaults.ImageMinTokens -ne 256 -or $tokenDefaults.ImageMaxTokens -ne 768) { throw 'Default image token limits changed.' }
+        foreach ($invalid in @('63', '4097', '-1', '256.5', 'bad', '9999999999999999999999', ' ')) {
+            $env:APP_LOCAL_MODEL_IMAGE_MAX_TOKENS = $invalid
+            $blocked = $false
+            try { & (Join-Path $PSScriptRoot 'start-ml.ps1') -EnvPath $testConfig -CheckOnly }
+            catch {
+                if (-not $_.Exception.Message.Contains('APP_LOCAL_MODEL_IMAGE_MAX_TOKENS must be an integer')) { throw }
+                $blocked = $true
+            }
+            if (-not $blocked) { throw 'Invalid image token limit was accepted.' }
+        }
+        $env:APP_LOCAL_MODEL_IMAGE_MIN_TOKENS = '1024'
+        $env:APP_LOCAL_MODEL_IMAGE_MAX_TOKENS = '768'
+        $blocked = $false
+        try { & (Join-Path $PSScriptRoot 'start-ml.ps1') -EnvPath $testConfig -CheckOnly }
+        catch {
+            if (-not $_.Exception.Message.Contains('must not exceed APP_LOCAL_MODEL_IMAGE_MAX_TOKENS')) { throw }
+            $blocked = $true
+        }
+        if (-not $blocked) { throw 'Reversed image token limits were accepted.' }
+
+        foreach ($name in $trackedNames) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
         $reportPath = Join-Path $testDirectory 'environment-report.json'
         $env:APP_API_KEY = $createdKey
         $null = & (Join-Path $PSScriptRoot 'export-runtime-report.ps1') -EnvPath $testConfig -OutputPath $reportPath 6>&1
@@ -112,8 +136,9 @@ try {
 import hashlib, json, shutil, sys, zipfile
 from pathlib import Path
 project, fixture = map(Path, sys.argv[1:])
-for name in ("ml_tools", ".venv/Scripts", ".local_ml/models", ".local_ml/downloads", ".local_ml/llama"):
+for name in ("ml_tools", ".venv/Scripts", ".venv/Lib/site-packages", ".local_ml/models", ".local_ml/downloads", ".local_ml/llama"):
     (fixture / name).mkdir(parents=True, exist_ok=True)
+(fixture / ".venv/Lib/site-packages/av.py").write_text("# Synthetic import stub: no decoding occurs in launcher tests.\n", encoding="utf-8")
 for name in ("ml_tools/start_model.ps1", "ml_tools/install_runtime.py", ".venv/Scripts/python.exe", ".venv/pyvenv.cfg"):
     shutil.copyfile(project / name, fixture / name)
 weights = {"Qwen3.5-4B-Q4_K_M.gguf": b"synthetic weights", "mmproj-F16.gguf": b"synthetic projector"}
@@ -129,12 +154,56 @@ for name, content in weights.items():
 '@
         $fixtureCode | & $pythonPath - $projectRoot $fixtureRoot
         if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated launcher fixture.' }
-        $modelProbe = @{ Starts = 0 }
+
+        # Test the combined launcher's real profile loading and forwarding, while
+        # replacing environment/model checks with local stubs. No server starts.
+        $fixtureScripts = Join-Path $fixtureRoot 'scripts'
+        $null = New-Item -ItemType Directory -Path $fixtureScripts
+        foreach ($script in @('common.ps1', 'start-ml.ps1')) {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination (Join-Path $fixtureScripts $script)
+        }
+        [IO.File]::WriteAllText((Join-Path $fixtureScripts 'check.ps1'), 'param($EnvPath, [switch]$RequireAnalyzer)')
+        $fixtureModel = Join-Path $fixtureRoot 'ml_tools/start_model.ps1'
+        $realFixtureModel = [IO.File]::ReadAllText($fixtureModel)
+        $stubModel = @'
+param($Model, $Port, $ImageMinTokens, $ImageMaxTokens, [switch]$CheckOnly, [switch]$Background)
+if (-not $CheckOnly -or $Background) { throw 'Combined fixture attempted to start a model.' }
+if ($Model -ne '3.5-4b' -or $Port -ne 8091) { throw 'Combined launcher changed the model or port.' }
+return [pscustomobject]@{ Min = $ImageMinTokens; Max = $ImageMaxTokens }
+'@
+        try {
+            [IO.File]::WriteAllText($fixtureModel, $stubModel)
+            foreach ($name in $trackedNames) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+            $forwarded = & (Join-Path $fixtureScripts 'start-ml.ps1') -EnvPath $testConfig -CheckOnly
+            if ($forwarded.Min -ne 256 -or $forwarded.Max -ne 768) { throw 'Default image token limits were not forwarded.' }
+            $tokenConfig = Join-Path $testDirectory 'image-tokens.env'
+            [IO.File]::WriteAllText($tokenConfig, "APP_LOCAL_MODEL_IMAGE_MIN_TOKENS=512`nAPP_LOCAL_MODEL_IMAGE_MAX_TOKENS=1024`n")
+            $profileHash = (Get-FileHash -LiteralPath $tokenConfig).Hash
+            $forwarded = & (Join-Path $fixtureScripts 'start-ml.ps1') -EnvPath $tokenConfig -CheckOnly
+            if ($forwarded.Min -ne 512 -or $forwarded.Max -ne 1024) { throw 'Profile image token limits were not forwarded.' }
+            $env:APP_LOCAL_MODEL_IMAGE_MAX_TOKENS = '1536'
+            $forwarded = & (Join-Path $fixtureScripts 'start-ml.ps1') -EnvPath $tokenConfig -CheckOnly
+            if ($forwarded.Min -ne 512 -or $forwarded.Max -ne 1536) { throw 'Explicit process environment precedence changed.' }
+            if ((Get-FileHash -LiteralPath $tokenConfig).Hash -ne $profileHash) { throw 'Image token settings changed the profile on disk.' }
+        }
+        finally {
+            [IO.File]::WriteAllText($fixtureModel, $realFixtureModel)
+            foreach ($name in $trackedNames) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+        }
+        $modelProbe = @{ Starts = 0; ContextCheckpoints = '32' }
         function Start-Process {
             param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru)
             $modelProbe.Starts++
             if ($WindowStyle -ne 'Hidden' -or -not $PassThru) { throw 'Background runtime must be hidden and return its owned process.' }
             if ($ArgumentList -notcontains '--offline') { throw 'Runtime omitted offline mode.' }
+            foreach ($flag in @('--cache-ram', '--ctx-checkpoints')) {
+                $flagIndex = [array]::IndexOf($ArgumentList, $flag)
+                $expected = if ($flag -eq '--ctx-checkpoints') { $modelProbe.ContextCheckpoints } else { '0' }
+                if ($flagIndex -lt 0 -or $flagIndex + 1 -ge $ArgumentList.Count -or $ArgumentList[$flagIndex + 1] -ne $expected) {
+                    throw "Runtime did not pass the required value for $flag."
+                }
+            }
+            if ($ArgumentList -notcontains '--no-cache-idle-slots') { throw 'Runtime must not retain idle slot prompt state.' }
             return [pscustomobject]@{ FixtureProcess = $true; HasExited = $false; Id = 0 }
         }
         try {
@@ -142,11 +211,14 @@ for name, content in weights.items():
             if ($returned.Count -ne 1 -or -not $returned[0].FixtureProcess) { throw 'Background runtime polluted its process return value with verification output.' }
             $null = & (Join-Path $fixtureRoot 'ml_tools/start_model.ps1') -CheckOnly
             if ($modelProbe.Starts -ne 1) { throw 'CheckOnly unexpectedly started a process.' }
+            $modelProbe.ContextCheckpoints = '0'
+            $null = & (Join-Path $fixtureRoot 'ml_tools/start_model.ps1') -Background -ContextCheckpoints 0
+            if ($modelProbe.Starts -ne 2) { throw 'Explicit checkpoint override was not passed to the owned runtime.' }
             [IO.File]::WriteAllText((Join-Path $fixtureRoot '.local_ml/models/Qwen3.5-4B-Q4_K_M.gguf'), 'corrupt synthetic weights')
             $blocked = $false
             try { & (Join-Path $fixtureRoot 'ml_tools/start_model.ps1') -Background 2>$null }
             catch { $blocked = $true }
-            if (-not $blocked -or $modelProbe.Starts -ne 1) { throw 'Runtime started with corrupt local weights.' }
+            if (-not $blocked -or $modelProbe.Starts -ne 2) { throw 'Runtime started with corrupt local weights.' }
         }
         finally { Remove-Item Function:\Start-Process }
     }

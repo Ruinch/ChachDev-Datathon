@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas import AnalysisScope, DoneResponse, FailedResponse, JobError, ProcessingResponse, RuleReference
+from app.review import ReviewDoneResponse, ReviewScope
 
 
 class JobMetadata(BaseModel):
@@ -20,6 +21,7 @@ class JobMetadata(BaseModel):
     width: int | None = None
     height: int | None = None
     codec: str | None = None
+    analysis_mode: Literal["experimental_review"] | None = None
 
 
 class ProcessingJobResponse(ProcessingResponse):
@@ -34,10 +36,15 @@ class FailedJobResponse(FailedResponse):
     metadata: JobMetadata
 
 
-JobResponse = Annotated[
+class ReviewJobResponse(ReviewDoneResponse):
+    metadata: JobMetadata
+
+
+StrictJobResponse = Annotated[
     ProcessingJobResponse | DoneJobResponse | FailedJobResponse,
     Field(discriminator="status"),
 ]
+JobResponse = StrictJobResponse | ReviewJobResponse
 
 
 class ApiErrorResponse(BaseModel):
@@ -75,6 +82,13 @@ class SystemLimits(BaseModel):
     upload_timeout_sec: float
 
 
+class ExperimentalReviewStatus(BaseModel):
+    enabled: bool
+    ready: bool = Field(description="Technical readiness for unvalidated observations; does not enable verified analysis")
+    rule_ids: list[str]
+    unavailable_reason: JobError | None
+
+
 class SystemStatusResponse(BaseModel):
     ready: bool = Field(description="Configured technical prerequisites and, for the built-in adapter, a responding local model runtime. Does not attest detection quality.")
     analyzer: AnalyzerReadiness
@@ -82,6 +96,7 @@ class SystemStatusResponse(BaseModel):
     limits: SystemLimits
     busy: bool
     unavailable_reason: JobError | None
+    review: ExperimentalReviewStatus
 
 
 class JobHistoryItem(BaseModel):
@@ -90,7 +105,7 @@ class JobHistoryItem(BaseModel):
     verdict: Literal["violation", "no_violation"] | None
     event_count: int = Field(ge=0)
     metadata: JobMetadata
-    analysis_scope: AnalysisScope | None = None
+    analysis_scope: ReviewScope | AnalysisScope | None = None
 
 
 class JobHistorySummary(BaseModel):

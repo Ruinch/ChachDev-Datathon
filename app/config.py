@@ -20,6 +20,7 @@ class Settings:
     ffprobe_bin: str = "ffprobe"
     analyzer_factory: str | None = None
     rule_catalog_path: Path | None = None
+    experimental_review: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,6 +38,7 @@ class Settings:
             ffprobe_bin=os.getenv("APP_FFPROBE_BIN", "ffprobe"),
             analyzer_factory=os.getenv("APP_ANALYZER_FACTORY") or None,
             rule_catalog_path=Path(rules_path) if rules_path else None,
+            experimental_review=os.getenv("APP_EXPERIMENTAL_REVIEW", "false").lower() == "true",
         )
 
     def validate(self) -> None:

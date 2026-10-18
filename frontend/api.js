@@ -21,6 +21,8 @@ const messages = {
   server_busy: "Сервис уже обрабатывает запись. Повторите загрузку после её завершения.",
   unsupported_file_type: "Поддерживаются только файлы .mov.",
   analysis_not_ready: "Правила проверки ещё не активированы.",
+  review_disabled: "Экспериментальный разбор отключён на сервере.",
+  review_unavailable: "Экспериментальный разбор пока недоступен. Проверьте состояние локальной модели.",
   invalid_rule_catalog: "Каталог правил недоступен или содержит ошибку. Проверьте конфигурацию сервера.",
   video_tools_unavailable: "На сервере недоступны инструменты обработки видео.",
   video_probe_timeout: "Не удалось проверить параметры видео за допустимое время. Выберите другую запись.",
@@ -44,6 +46,7 @@ const uploadRejections = new Set([
   "video_tools_unavailable", "rules_unavailable", "ffmpeg_unavailable", "ffprobe_unavailable",
   "server_busy", "service_busy", "busy", "storage_unavailable",
   "local_model_unavailable", "ml_dependencies_unavailable",
+  "review_disabled", "review_unavailable",
 ]);
 
 async function responseError(response) {
@@ -137,6 +140,12 @@ export function startAnalysis(file, key, signal) {
   const body = new FormData();
   body.append("file", file);
   return apiRequest("/api/v1/analyze", key, { method: "POST", body, signal, timeoutMs: 60000 });
+}
+
+export function startReview(file, key, signal) {
+  const body = new FormData();
+  body.append("file", file);
+  return apiRequest("/api/v1/review", key, { method: "POST", body, signal, timeoutMs: 60000 });
 }
 
 export function getSource(id, key, signal) {

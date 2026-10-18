@@ -77,6 +77,7 @@
           </div>
 
           <form id="analyze-form" novalidate>
+            <p class="analysis-advisory" id="experimental-mode-note" role="note" hidden><strong>Экспериментальный разбор.</strong> Локальная модель выдаёт гипотезы, таймкоды и исходные кадры для ручной проверки. Вердикт о нарушении не формируется. Возможны ложные тревоги и пропуски; уверенность не откалибрована. Отсутствие наблюдений не означает отсутствия нарушений.</p>
             <div class="field-group">
               <span class="field-label" id="video-label">Видеофайл</span>
               <input class="visually-hidden" id="video-file" name="file" type="file" accept=".mov,video/quicktime" aria-labelledby="video-label" aria-describedby="file-help form-error" required />

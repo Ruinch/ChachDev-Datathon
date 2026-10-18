@@ -1,6 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { apiRequest, getSystem, startAnalysis } from "../../frontend/api.js";
+import { apiRequest, getSystem, startAnalysis, startReview } from "../../frontend/api.js";
+
+test("experimental review uses its own authenticated multipart endpoint", async t => {
+  t.mock.method(globalThis, "fetch", async (path, options) => {
+    assert.equal(path, "/api/v1/review");
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers["X-API-Key"], "secret");
+    assert.equal(await options.body.get("file").text(), "synthetic video");
+    return new Response(JSON.stringify({ status: "processing" }), { status: 202 });
+  });
+  assert.equal((await startReview(new Blob(["synthetic video"]), "secret")).status, "processing");
+});
+
+test("review readiness rejection codes are translated and never claim accepted upload", async t => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => new Response("{}", { status: 503 }));
+  for (const code of ["review_disabled", "review_unavailable"]) {
+    fetch.mock.mockImplementation(async () => new Response(JSON.stringify({ detail: { code, message: "Internal message" } }), { status: 503 }));
+    await assert.rejects(startReview(new Blob(["synthetic"]), "secret"), error =>
+      error.code === code && error.outcomeUnknown === false && /Экспериментальный разбор/.test(error.message) && !/Internal|могла быть принята/.test(error.message));
+  }
+});
 
 test("timeout covers a stalled successful response body", async t => {
   let signal;

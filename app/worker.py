@@ -14,11 +14,13 @@ from app.analyzer import (
     AnalyzerNotConfiguredError,
     LocalAnalysisResult,
     LocalAnalyzer,
+    InsufficientEvidenceError,
     load_analyzer_factory,
 )
 from app.config import Settings
 from app.evidence import EvidenceExtractionError, materialize_result
 from app.rules import load_rule_catalog
+from app.review import INSUFFICIENT_CONTEXT, materialize_review, review_rule_ids
 from app.storage import JobStore
 
 
@@ -89,17 +91,31 @@ def _run_job(job_id: str, settings: Settings, analyzer: LocalAnalyzer | None) ->
             raise RuntimeError("Job record is missing")
         duration = record["metadata"]["duration_sec"]
         catalog = load_rule_catalog(settings.rule_catalog_path)
-        if not catalog.enabled_rule_ids:
+        is_review = record["metadata"].get("analysis_mode") == "experimental_review"
+        if is_review and not settings.experimental_review:
+            store.set_failed(job_id, "review_disabled", "Experimental review has not been enabled")
+            return
+        allowed_ids = review_rule_ids(catalog) if is_review else catalog.enabled_rule_ids
+        if not allowed_ids:
             store.set_failed(job_id, "analysis_not_ready", "No verified rules have been enabled")
             return
         local_analyzer = analyzer if analyzer is not None else load_analyzer_factory(settings.analyzer_factory)
-        detected = LocalAnalysisResult.model_validate(local_analyzer.analyze(AnalysisContext(
-            job_id=job_id,
-            video_path=video_path,
-            duration_sec=duration,
-            enabled_rule_ids=catalog.enabled_rule_ids,
-        )))
-        completed = materialize_result(
+        try:
+            detected = LocalAnalysisResult.model_validate(local_analyzer.analyze(AnalysisContext(
+                job_id=job_id,
+                video_path=video_path,
+                duration_sec=duration,
+                enabled_rule_ids=allowed_ids,
+            )))
+        except InsufficientEvidenceError:
+            if not is_review:
+                raise
+            detected = LocalAnalysisResult(
+                verdict="no_violation", violations=[], analysis_complete=False,
+                checked_rule_ids=[], limitations=[INSUFFICIENT_CONTEXT],
+            )
+        materialize = materialize_review if is_review else materialize_result
+        completed = materialize(
             job_id=job_id,
             video_path=video_path,
             evidence_dir=store.evidence_dir(job_id),

@@ -9,8 +9,9 @@ from dataclasses import dataclass
 
 from app.analyzer import AnalysisContext, DetectedViolation, InsufficientEvidenceError, LocalAnalysisResult
 from app.ml.model import LoopbackModel, WindowResult
+from app.ml.episode_matching import same_episode
 from app.ml.rules import RULES
-from app.ml.video import Frame, VideoAnalysisError, check_deadline, decode_video, select_frames, windows
+from app.ml.video import Frame, Video, VideoAnalysisError, check_deadline, decode_video, select_frames, windows
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,12 @@ class AnalyzerConfig:
     max_duration_sec: float = 180
     max_refinements: int = 12
     input_mode: str = 'images'
+    # Research opt-in: allow correcting a candidate's class only with a further
+    # same-episode confirmation. The deployed factory does not enable this.
+    allow_reclassification: bool = False
+    # Research opt-in: revisit empty local windows with previously omitted frames.
+    # The deployed factory does not enable this additional sampling pass.
+    complementary_sampling: bool = False
 
     def __post_init__(self):
         for value in (self.budget_sec, self.window_sec, self.stride_sec, self.sample_fps, self.max_duration_sec):
@@ -110,6 +117,20 @@ def same_candidate(original: Candidate, refined: Candidate) -> bool:
             and refined.end >= original.start-original.sample_tolerance)
 
 
+def _complementary_frames(video: Video, original: list[Frame], count: int) -> list[Frame]:
+    """Keep the window endpoints and sample only previously omitted interior PTS."""
+    seen = {frame.timestamp for frame in original}
+    omitted = [frame for frame in video.frames
+               if original[0].timestamp < frame.timestamp < original[-1].timestamp
+               and frame.timestamp not in seen]
+    slots = min(count - 2, len(omitted))
+    if slots <= 0:
+        return []
+    indices = ([round(index * (len(omitted) - 1) / (slots - 1)) for index in range(slots)]
+               if slots > 1 else [len(omitted) // 2])
+    return [original[0], *(omitted[index] for index in indices), original[-1]]
+
+
 class QwenLocalAnalyzer:
     """Experimental local VLM implementation of the existing LocalAnalyzer protocol.
 
@@ -119,9 +140,26 @@ class QwenLocalAnalyzer:
     """
     _gpu_lock = threading.Lock()
 
-    def __init__(self, config: AnalyzerConfig | None = None, *, model=None):
+    def __init__(self, config: AnalyzerConfig | None = None, *, model=None, local_frame_selector=None,
+                 candidate_matcher=None):
         self.config = config or AnalyzerConfig()
         self.model = model or LoopbackModel(self.config.endpoint, input_mode=self.config.input_mode)
+        # Explicit research injection only. The production factory keeps uniform
+        # selection; global overview and refinement never call this selector.
+        self.local_frame_selector = local_frame_selector
+        # Explicit None retains legacy research matching; the service factory
+        # injects the evaluated strict source-time episode matcher.
+        self.candidate_matcher = candidate_matcher
+
+    def _matches_candidate(self, original: Candidate, refined: Candidate, *,
+                           ignore_rule: bool = False, constituents=None) -> bool:
+        if self.candidate_matcher is not None:
+            return self.candidate_matcher(original, refined, ignore_rule=ignore_rule,
+                                          constituents=constituents)
+        if ignore_rule:
+            return (refined.start <= original.end + original.sample_tolerance
+                    and refined.end >= original.start - original.sample_tolerance)
+        return same_candidate(original, refined)
 
     def analyze(self, context: AnalysisContext) -> LocalAnalysisResult:
         result, _ = self.analyze_with_metrics(context)
@@ -147,28 +185,99 @@ class QwenLocalAnalyzer:
             decoded = time.monotonic()
             pending = []
             unassessable = 0
+            empty_local_windows = []
+            complementary_passes = 0
+            initial_candidate_counts = Counter()
+            complementary_candidate_counts = Counter()
+            local_frame_selection = {}
+            original_frame_ids = {id(frame) for frame in video.frames} if self.local_frame_selector else set()
             spans = windows(video.duration, cfg.window_sec, cfg.stride_sec)
             # A global pass connects customer handovers across window boundaries.
             if len(spans) > 1:
                 spans = [(0, video.duration)] + spans
-            for start, end in spans:
-                frames = select_frames(video, start, end, cfg.frames_per_window)
+            for index, (start, end) in enumerate(spans):
+                is_global = len(spans) > 1 and index == 0
+                if self.local_frame_selector is not None and not is_global:
+                    check_deadline(deadline)
+                    frames = self.local_frame_selector(
+                        video, start, end, cfg.frames_per_window,
+                        deadline=deadline, audit=local_frame_selection,
+                    )
+                    check_deadline(deadline)
+                    if (not isinstance(frames, list) or not 2 <= len(frames) <= cfg.frames_per_window
+                            or any(not isinstance(frame, Frame) or id(frame) not in original_frame_ids
+                                   or not start <= frame.timestamp <= end for frame in frames)
+                            or any(a.timestamp >= b.timestamp for a, b in zip(frames, frames[1:]))):
+                        raise VideoAnalysisError('Invalid local frame selection')
+                else:
+                    frames = select_frames(video, start, end, cfg.frames_per_window)
                 result = self.model.infer(frames, check_deadline(deadline), rule_ids=enabled)
                 unassessable += not result.assessable
                 pending.extend(candidates(result, frames))
+                initial_candidate_counts.update(event.rule_id for event in result.events)
+                if cfg.complementary_sampling and not is_global and not result.events:
+                    empty_local_windows.append(frames)
+            for original in empty_local_windows:
+                check_deadline(deadline)
+                frames = _complementary_frames(video, original, cfg.frames_per_window)
+                if not frames:
+                    continue
+                result = self.model.infer(frames, check_deadline(deadline), rule_ids=enabled)
+                complementary_passes += 1
+                unassessable += not result.assessable
+                pending.extend(candidates(result, frames))
+                complementary_candidate_counts.update(event.rule_id for event in result.events)
+            screening_unassessable = unassessable
+            # Keep the actual screening candidates only for the opt-in matcher;
+            # merged contexts must not invent the provenance of their boundaries.
+            screened_candidates = tuple(pending) if self.candidate_matcher is not None else ()
             pending = merge_events(pending)
             if len(pending) > cfg.max_refinements:
                 raise VideoAnalysisError("Too many candidates to verify within configured budget")
             refined = []
+            classification_rechecks = 0
+            refinement_confirmed_candidates = 0
+            refinement_rejected_candidate_counts = Counter()
             for event in pending:
+                confirmed_before = len(refined)
+                constituents = (tuple(candidate for candidate in screened_candidates
+                                      if candidate.rule_id == event.rule_id
+                                      and event.start <= candidate.start <= candidate.end <= event.end)
+                                if self.candidate_matcher is not None else None)
                 # Preserve the original operation context: cropping to the peak alone
                 # can remove the customer handover/start and make refinement invalid.
                 frames = refinement_frames(video, event, min(32 if cfg.input_mode == 'video' else 16, cfg.frames_per_window + 4))
-                result = self.model.infer(frames, check_deadline(deadline), refine=True, rule_ids=(event.rule_id,))
+                result = self.model.infer(frames, check_deadline(deadline), refine=True,
+                                         rule_ids=enabled if cfg.allow_reclassification else (event.rule_id,))
                 if not result.assessable:
                     unassessable += 1
                 # New unrelated claims at refinement cannot bypass the two-pass check.
-                refined.extend(e for e in candidates(result, frames) if same_candidate(event, e))
+                reviewed = candidates(result, frames)
+                refined.extend(e for e in reviewed if e.rule_id in enabled
+                               and self._matches_candidate(event, e, constituents=constituents))
+                if cfg.allow_reclassification:
+                    alternatives = [e for e in reviewed if e.rule_id != event.rule_id
+                                    and e.rule_id in enabled
+                                    and self._matches_candidate(event, e, ignore_rule=True,
+                                                                constituents=constituents)]
+                    for alternative in alternatives:
+                        if len(pending) + classification_rechecks >= cfg.max_refinements:
+                            raise VideoAnalysisError('Too many classification checks within configured budget')
+                        classification_rechecks += 1
+                        confirmation = self.model.infer(frames, check_deadline(deadline), refine=True,
+                                                        rule_ids=(alternative.rule_id,))
+                        unassessable += not confirmation.assessable
+                        # A changed class cannot bypass two positive checks, and
+                        # a remote episode in the context cannot replace this one.
+                        refined.extend(e for e in candidates(confirmation, frames)
+                                       if e.rule_id in enabled
+                                       and self._matches_candidate(alternative, e)
+                                       and self._matches_candidate(event, e, ignore_rule=True,
+                                                                   constituents=constituents))
+                if len(refined) > confirmed_before:
+                    refinement_confirmed_candidates += 1
+                else:
+                    refinement_rejected_candidate_counts.update([event.rule_id])
             check_deadline(deadline)
             events = merge_events(refined)
             # Specific next-customer event takes precedence over generic cash storage.
@@ -191,6 +300,20 @@ class QwenLocalAnalyzer:
                        "decode_sec": round(decoded - acquired, 3), "duration_sec": round(video.duration, 3),
                        "sampled_frames": len(video.frames), "decoded_frames": video.decoded_frames,
                        "windows": len(spans), "refinements": len(pending), "events": len(violations),
+                       "classification_rechecks": classification_rechecks,
+                       "screening_passes": len(spans) + complementary_passes,
+                       "local_frame_selection": local_frame_selection,
+                       "screening_unassessable": screening_unassessable,
+                       "initial_candidates": sum(initial_candidate_counts.values()),
+                       "initial_candidate_counts": dict(initial_candidate_counts),
+                       "complementary_passes": complementary_passes,
+                       "complementary_candidates": sum(complementary_candidate_counts.values()),
+                       "complementary_candidate_counts": dict(complementary_candidate_counts),
+                       "refinement_passes": len(pending) + classification_rechecks,
+                       "refinement_unassessable": unassessable - screening_unassessable,
+                       "refinement_confirmed_candidates": refinement_confirmed_candidates,
+                       "refinement_rejected_candidates": sum(refinement_rejected_candidate_counts.values()),
+                       "refinement_rejected_candidate_counts": dict(refinement_rejected_candidate_counts),
                        "candidate_counts": dict(Counter(e.rule_id for e in pending))}
             return result, metrics
         finally:
@@ -205,4 +328,4 @@ def build_analyzer() -> QwenLocalAnalyzer:
         max_side=int(os.getenv('APP_ML_MAX_SIDE', '848')),
         frames_per_window=int(os.getenv('APP_ML_FRAMES', '12')),
         input_mode=os.getenv('APP_ML_INPUT_MODE', 'images'),
-    ))
+    ), candidate_matcher=same_episode)

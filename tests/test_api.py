@@ -147,14 +147,16 @@ def test_openapi_declares_api_key_and_complete_job_schemas(tmp_path):
         accepted = specification["paths"]["/api/v1/analyze"]["post"]["responses"]["202"]["content"]["application/json"]["schema"]
         assert accepted["$ref"].endswith("/ProcessingJobResponse")
         job = specification["paths"]["/api/v1/jobs/{job_id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-        assert job["discriminator"]["propertyName"] == "status"
-        assert set(job["discriminator"]["mapping"]) == {"processing", "done", "failed"}
+        strict_job = next(branch for branch in job["anyOf"] if "discriminator" in branch)
+        assert strict_job["discriminator"]["propertyName"] == "status"
+        assert set(strict_job["discriminator"]["mapping"]) == {"processing", "done", "failed"}
+        assert any(branch.get("$ref", "").endswith("/ReviewJobResponse") for branch in job["anyOf"])
         components = specification["components"]["schemas"]
         system = specification["paths"]["/api/v1/system"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         assert system["$ref"].endswith("/SystemStatusResponse")
         system_schema = components["SystemStatusResponse"]
         assert system_schema["type"] == "object"
-        assert set(system_schema["properties"]) == {"ready", "analyzer", "tools", "limits", "busy", "unavailable_reason"}
+        assert set(system_schema["properties"]) == {"ready", "analyzer", "tools", "limits", "busy", "unavailable_reason", "review"}
         assert system_schema["properties"]["ready"]["type"] == "boolean"
         assert components["MediaToolAvailability"]["properties"]["ffprobe"]["type"] == "boolean"
         assert components["SystemLimits"]["properties"]["max_upload_bytes"]["type"] == "integer"

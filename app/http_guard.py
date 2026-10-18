@@ -37,12 +37,12 @@ class ApiGuard:
             }})(scope, receive, private_send)
             return
 
-        if scope["method"] != "POST" or scope["path"] != "/api/v1/analyze":
+        if scope["method"] != "POST" or scope["path"] not in ("/api/v1/analyze", "/api/v1/review"):
             await self.app(scope, receive, private_send)
             return
 
         try:
-            async with self.service.admit_upload() as admission:
+            async with self.service.admit_upload(review=scope["path"] == "/api/v1/review") as admission:
                 self._check_content_length(headers)
                 scope.setdefault("state", {})["upload_admission"] = admission
                 await self.app(scope, self._limited_receive(receive), private_send)

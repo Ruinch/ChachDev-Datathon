@@ -43,3 +43,13 @@ test("opening a historical result does not discard a journal summary about anoth
   assert.equal(element("global-service-state").dataset.state, "busy");
   assert.equal(view.lastSummary.processing, 1);
 });
+
+test("the connected experimental service is available without a green verified-analysis claim", t => {
+  const system = { ready: false, busy: false, review: { enabled: true, ready: true } };
+  const state = { connected: true, page: "review", jobId: ID, job: { status: "done" }, busy: false, system };
+  const { view, element } = statusView(t, state);
+  view.lastSummary = { processing: 0 };
+  view.updateGlobalState();
+  assert.match(element("global-service-state").textContent, /Экспериментальный разбор/);
+  assert.equal(element("global-service-state").dataset.state, "warning");
+});

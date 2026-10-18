@@ -2,6 +2,7 @@ import { WorkspaceSession } from "./session.js";
 import { SourcePlayer, EvidenceViewer, formatTime, formatSize, validFrame, createJsonDownload } from "./media.js";
 import { ServiceWorkspace } from "./service.js";
 import { describeAnalysisScope } from "./result-scope.js";
+import { serviceMode, isExperimental, resultEvents, resultPresentation } from "./review-mode.js";
 
 const byId = id => document.getElementById(id);
 const form = byId("analyze-form");
@@ -48,7 +49,7 @@ function setLocked(value) {
   byId("check-service").disabled = value;
   dropzone.dataset.locked = String(value);
   dropzone.setAttribute("aria-disabled", String(value));
-  byId("submit-label").textContent = value ? "Идёт проверка…" : "Начать проверку";
+  byId("submit-label").textContent = value ? "Идёт проверка…" : serviceMode(session.state.system).experimental ? "Начать экспериментальный разбор" : "Начать проверку";
 }
 
 function clearResult() {
@@ -74,6 +75,12 @@ function chooseFile(file) {
 }
 
 function readinessMessage(info) {
+  const mode = serviceMode(info);
+  if (mode.experimental) {
+    if (info.busy) return "Сервис обрабатывает другую запись. Повторите загрузку после её завершения.";
+    if (!mode.ready) return "Экспериментальный разбор недоступен. " + (info.review.unavailable_reason?.message || "Проверьте состояние локальной модели и инструментов видео.");
+    return "Готов к экспериментальному разбору. Модель выделяет наблюдения и исходные кадры для ручной проверки. Это не заключение о нарушениях; возможны ложные тревоги и пропуски. Уверенность не откалибрована.";
+  }
   const reasons = [];
   if (!info.analyzer?.configured) reasons.push("локальная модель ещё не подключена");
   if (info.analyzer?.runtime?.ready === false) reasons.push(info.analyzer.runtime.unavailable_reason?.code === "ml_dependencies_unavailable"
@@ -199,8 +206,10 @@ function renderEventDetail(index) {
   });
   eventDetail.append(seek);
   const description = element("section", "detail-block");
-  description.append(element("span", "detail-label", "НАБЛЮДЕНИЕ АНАЛИЗАТОРА"));
+  const experimental = isExperimental(currentResult);
+  description.append(element("span", "detail-label", experimental ? "ГИПОТЕЗА МОДЕЛИ · ПРОВЕРЬТЕ ПО ВИДЕО" : "НАБЛЮДЕНИЕ АНАЛИЗАТОРА"));
   description.append(element("p", "event-description", event.description || "Описание не получено."));
+  if (experimental) description.append(element("p", "field-help", "Уверенность не откалибрована: достоверный процент не рассчитан. Кадры показывают исходную запись, но сами по себе не подтверждают интерпретацию модели."));
   eventDetail.append(description);
   const evidence = element("section", "detail-block");
   evidence.append(element("span", "detail-label", "КАДРЫ ИЗ ИСХОДНОГО ВИДЕО · НАЖМИТЕ ДЛЯ УВЕЛИЧЕНИЯ"));
@@ -231,12 +240,13 @@ function renderEventDetail(index) {
   } else evidence.append(element("p", "evidence-empty", "Кадры для этого события не получены."));
   eventDetail.append(evidence);
   const rule = element("section", "detail-block");
-  rule.append(element("span", "detail-label", "НОРМА ДЛЯ СОПОСТАВЛЕНИЯ"));
+  const reference = experimental ? event.candidate_rule : event.rule;
+  rule.append(element("span", "detail-label", experimental ? "КАНДИДАТНАЯ НОРМА · ПРИМЕНИМОСТЬ НЕ ПОДТВЕРЖДЕНА" : "НОРМА ДЛЯ СОПОСТАВЛЕНИЯ"));
   const box = element("div", "rule-box");
-  box.append(element("p", "rule-title", [event.rule?.title, event.rule?.clause].filter(Boolean).join(" · ") || "Источник правила не указан."));
-  if (event.rule?.source_url) {
+  box.append(element("p", "rule-title", [reference?.title, reference?.clause].filter(Boolean).join(" · ") || "Источник правила не указан."));
+  if (reference?.source_url) {
     try {
-      const url = new URL(event.rule.source_url);
+      const url = new URL(reference.source_url);
       if (!["http:", "https:"].includes(url.protocol)) throw new Error("Unsupported protocol");
       const link = element("a", "rule-link", "Открыть источник ↗");
       link.href = url.href;
@@ -246,7 +256,9 @@ function renderEventDetail(index) {
     } catch (_) { /* The title remains useful when a URL is malformed. */ }
   }
   rule.append(box);
-  const legalNote = element("p", "legal-reference-note", "Здесь приведена нормативная ссылка, сохранённая с результатом. Редакция справки при анализе не записывалась; применимость нормы нужно сверять с датой и условиями операции.");
+  const legalNote = element("p", "legal-reference-note", experimental
+    ? "Сервер добавил кандидатную ссылку из каталога. Это не подтверждение нарушения или применимости нормы. Проверьте вид операции, роли участников, принадлежность денег, порядок действий и редакцию на дату операции."
+    : "Здесь приведена нормативная ссылка, сохранённая с результатом. Редакция справки при анализе не записывалась; применимость нормы нужно сверять с датой и условиями операции.");
   const legalLink = element("a", "rule-link", "Открыть правовую справку →");
   legalLink.href = "#rules";
   rule.append(legalNote, legalLink);
@@ -261,7 +273,8 @@ function renderResult(result) {
   byId("export-result").href = download.url;
   byId("export-result").download = download.filename;
   resultsPanel.hidden = false;
-  const events = Array.isArray(result.violations) ? result.violations : [];
+  const events = resultEvents(result);
+  const presentation = resultPresentation(result);
   const badge = byId("verdict-badge");
   const summary = byId("results-summary");
   const noEvents = byId("no-events");
@@ -270,14 +283,12 @@ function renderResult(result) {
   scopeNote.hidden = false;
   scopeNote.dataset.complete = String(Boolean(scope?.full_video_checked));
   scopeNote.textContent = describeAnalysisScope(scope);
-  if (result.verdict === "violation" && events.length) {
+  resultsTitle.textContent = presentation.title;
+  summary.textContent = presentation.summary;
+  badge.textContent = presentation.badge;
+  badge.dataset.verdict = presentation.badgeState;
+  if (presentation.hasEvents) {
     currentEvents = events.slice().sort((a, b) => a.timecode_sec - b.timecode_sec);
-    resultsTitle.textContent = "Эпизоды для проверки";
-    summary.textContent = "Событий для проверки: " + events.length + ". " + (scope?.full_video_checked === false
-      ? "Часть записи или процедур оценить не удалось. Учитывайте ограничения ниже и сверьте эпизоды с исходной записью."
-      : "Сверьте каждый эпизод с исходной записью и условиями нормы.");
-    badge.textContent = "ТРЕБУЕТ ПРОВЕРКИ";
-    badge.dataset.verdict = "violation";
     byId("event-count").textContent = String(events.length).padStart(2, "0");
     byId("events-layout").hidden = false;
     currentEvents.forEach((event, index) => {
@@ -296,15 +307,11 @@ function renderResult(result) {
     renderEventDetail(0);
   } else {
     noEvents.hidden = false;
-    const clear = result.verdict === "no_violation" && events.length === 0 && scope?.full_video_checked === true;
-    if (!clear) scopeNote.hidden = true;
-    resultsTitle.textContent = clear ? "Результат проверки" : "Результат недоступен";
-    badge.textContent = clear ? "СОБЫТИЯ НЕ НАЙДЕНЫ" : "НЕТ ДАННЫХ";
-    badge.dataset.verdict = clear ? "no_violation" : "unknown";
+    const clear = presentation.clear;
+    if (!clear && !presentation.experimental) scopeNote.hidden = true;
     noEvents.dataset.state = clear ? "clear" : "unknown";
-    summary.textContent = clear ? "Запись проверена по сохранённому набору процедур." : "Сервис вернул неполный ответ.";
-    noEvents.querySelector("h3").textContent = clear ? "По сохранённым процедурам события не найдены" : "Не удалось показать результат";
-    noEvents.querySelector("p").textContent = clear ? "Анализатор мог пропустить событие. Вывод относится только к указанным выше сохранённым процедурам этой проверки. Другие действия требуют отдельной оценки по исходной записи." : "Повторите проверку или изучите ответ API.";
+    noEvents.querySelector("h3").textContent = presentation.emptyTitle;
+    noEvents.querySelector("p").textContent = presentation.emptyDescription;
     noEvents.querySelector(".no-events-icon").textContent = clear ? "✓" : "!";
   }
   byId("result-announcement").textContent = "Проверка завершена. " + summary.textContent;
@@ -425,6 +432,7 @@ byId("copy-job").addEventListener("click", async () => {
 new ServiceWorkspace(session);
 session.subscribe((state, previous) => {
   setLocked(state.busy);
+  byId("experimental-mode-note").hidden = !serviceMode(state.system).experimental;
   byId("check-service").disabled = state.busy || state.connecting;
   byId("resume-job").value = state.pendingJob || state.jobId || "";
   byId("copy-job").hidden = !state.jobId;
@@ -460,7 +468,7 @@ session.subscribe((state, previous) => {
       uploading: "Передаём файл сервису. Параметры видео проверит сервер.",
       loading: "Запрашиваем сохранённую задачу…",
       processing: "Сервис проверяет запись. Результат появится автоматически.",
-      done: "Результат готов. Сверьте автоматический вывод с исходной записью.",
+      done: isExperimental(state.job) ? "Экспериментальный разбор готов. Наблюдения требуют ручной проверки; вердикт о нарушении не сформирован." : "Результат готов. Сверьте автоматический вывод с исходной записью.",
       failed: state.job?.status === "failed" ? failureMessage(state.job.error) : state.error?.message || "Проверка не завершена.",
       connection: state.pollRetry
         ? state.pollRetry.exhausted
@@ -498,15 +506,16 @@ function preparePrintReport(result) {
     resultsPanel.append(report);
   }
   report.replaceChildren();
-  report.append(element("h2", "", "Кассовый контроль · Отчёт по проверке"));
-  report.append(element("p", "", "Автоматический результат: " + (result.verdict === "violation" ? "найдены эпизоды для проверки" : result.verdict === "no_violation" && result.analysis_scope?.full_video_checked ? "по сохранённому набору процедур события не найдены; анализатор мог пропустить событие" : "результат требует уточнения")));
+  const experimental = isExperimental(result);
+  report.append(element("h2", "", experimental ? "Кассовый контроль · Экспериментальный разбор" : "Кассовый контроль · Отчёт по проверке"));
+  report.append(element("p", "", resultPresentation(result).summary));
   report.append(element("p", "print-scope", describeAnalysisScope(result.analysis_scope)));
   report.append(element("p", "", byId("analysis-advisory").textContent));
-  const events = Array.isArray(result.violations) ? result.violations.slice().sort((a, b) => a.timecode_sec - b.timecode_sec) : [];
+  const events = resultEvents(result).slice().sort((a, b) => a.timecode_sec - b.timecode_sec);
   for (const [index, event] of events.entries()) {
     const article = element("article", "print-event");
     article.append(element("h3", "", `${index + 1}. ${event.type} · ${formatTime(event.timecode_sec)}`));
-    article.append(element("p", "", "Наблюдение анализатора: " + (event.description || "Описание не получено.")));
+    article.append(element("p", "", (experimental ? "Гипотеза модели, уверенность не откалибрована: " : "Наблюдение анализатора: ") + (event.description || "Описание не получено.")));
     const frames = element("div", "print-frames");
     for (const frame of (event.evidence_frames || []).filter(validFrame).slice(0, 3)) {
       const figure = element("figure");
@@ -517,8 +526,9 @@ function preparePrintReport(result) {
       frames.append(figure);
     }
     article.append(frames);
-    article.append(element("p", "", [event.rule?.title, event.rule?.clause].filter(Boolean).join(" · ")));
-    if (event.rule?.source_url) article.append(element("p", "print-reference", event.rule.source_url));
+    const reference = experimental ? event.candidate_rule : event.rule;
+    article.append(element("p", "", (experimental ? "Кандидатная норма, применимость не подтверждена: " : "") + [reference?.title, reference?.clause].filter(Boolean).join(" · ")));
+    if (reference?.source_url) article.append(element("p", "print-reference", reference.source_url));
     report.append(article);
   }
   report.append(element("p", "", "Нормативные ссылки сохранены с результатом; редакция справки при анализе не записывалась. Проверьте применимость нормы на дату операции."));

@@ -58,6 +58,73 @@ def test_parse_source_labels():
         parse_timestamp('NaN')
 
 
+@pytest.mark.parametrize('confirm_alternative', [True, False])
+def test_same_episode_can_change_class_only_after_separate_confirmation(tmp_path, confirm_alternative):
+    source = tmp_path / 'synthetic.mov'
+    synthetic_video(source)
+    class ReconsideringModel:
+        def __init__(self):
+            self.calls = []
+        def infer(self, frames, timeout, *, refine=False, rule_ids=None):
+            self.calls.append(tuple(rule_ids))
+            if not refine:
+                rule = 'R22'
+            elif len(self.calls) == 2:
+                rule = 'R20-C'
+            elif confirm_alternative:
+                rule = 'R20-C'
+            else:
+                return WindowResult(assessable=True, events=[])
+            if rule not in rule_ids:
+                return WindowResult(assessable=True, events=[])
+            return WindowResult(assessable=True, events=[Event(
+                rule_id=rule, start_frame=1, peak_frame=2, end_frame=4,
+                conditions=list(RULES[rule].criteria), observation='Synthetic temporal classification correction.')])
+    model = ReconsideringModel()
+    config = AnalyzerConfig(allow_reclassification=True)
+    result, metrics = QwenLocalAnalyzer(config, model=model).analyze_with_metrics(
+        AnalysisContext('synthetic', source, 3.0, ('R22', 'R20-C')))
+    assert [e.rule_id for e in result.violations] == (['R20-C'] if confirm_alternative else [])
+    assert model.calls == [('R22', 'R20-C'), ('R22', 'R20-C'), ('R20-C',)]
+    assert metrics['classification_rechecks'] == 1
+
+
+def test_reclassification_cannot_replace_candidate_with_unrelated_later_episode(tmp_path):
+    source = tmp_path / 'synthetic.mov'
+    synthetic_video(source)
+    class UnrelatedModel:
+        calls = 0
+        def infer(self, frames, timeout, *, refine=False, rule_ids=None):
+            self.calls += 1
+            rule, index = ('R20-C', len(frames)-1) if refine else ('R22', 0)
+            return WindowResult(assessable=True, events=[Event(
+                rule_id=rule, start_frame=index, peak_frame=index, end_frame=index,
+                conditions=list(RULES[rule].criteria), observation='Synthetic unrelated episode.')])
+    model = UnrelatedModel()
+    result = QwenLocalAnalyzer(AnalyzerConfig(allow_reclassification=True), model=model).analyze(
+        AnalysisContext('synthetic', source, 3.0, ('R22', 'R20-C')))
+    assert not result.violations
+    assert model.calls == 2
+
+
+def test_classification_confirmation_respects_total_refinement_budget(tmp_path):
+    source = tmp_path / 'synthetic.mov'
+    synthetic_video(source)
+    class ChangingModel:
+        calls = 0
+        def infer(self, frames, timeout, *, refine=False, rule_ids=None):
+            self.calls += 1
+            rule = 'R20-C' if refine else 'R22'
+            return WindowResult(assessable=True, events=[Event(
+                rule_id=rule, start_frame=0, peak_frame=1, end_frame=2,
+                conditions=list(RULES[rule].criteria), observation='Synthetic classification candidate.')])
+    model = ChangingModel()
+    with pytest.raises(VideoAnalysisError, match='classification checks'):
+        QwenLocalAnalyzer(AnalyzerConfig(allow_reclassification=True, max_refinements=1), model=model).analyze(
+            AnalysisContext('synthetic', source, 3.0, ('R22', 'R20-C')))
+    assert model.calls == 2
+
+
 def test_split_quarantines_conflict_and_keeps_duplicates_together():
     rows = [dict(sha256=str(i), label='violation' if i % 2 else 'no_violation', point_sec=5 if i % 2 else None, duration_sec=10+i) for i in range(20)]
     rows += [dict(rows[3], point_sec=6), dict(rows[4])]

@@ -7,6 +7,13 @@ import math
 from pathlib import Path
 
 from app.ml.rules import RULES
+from ml_tools.source_aliases import resolve_annotations_by_sha
+
+
+def normalize_source_group(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError('Reviewed source group must be a string')
+    return value.strip().casefold()
 
 
 def validate_annotations(manifest: dict, annotations: dict, *, require_all: bool = False) -> dict:
@@ -26,10 +33,10 @@ def validate_annotations(manifest: dict, annotations: dict, *, require_all: bool
             if require_all:
                 raise ValueError('Some videos have not been reviewed')
             continue
-        group = annotation.get('source_group', '').strip()
+        group = normalize_source_group(annotation.get('source_group', ''))
         if not group:
             raise ValueError('Reviewed annotation requires a source/camera/session group')
-        if group.lower() in {'organizer-single-camera', 'unknown-session', 'unknown', 'unassigned'}:
+        if group in {'organizer-single-camera', 'unknown-session', 'unknown', 'unassigned'}:
             raise ValueError('Unknown/automatic camera placeholder must be replaced after local source-group review')
         reviewed += 1
         duplicate_groups.setdefault(record['sha256'], set()).add(group)
@@ -51,6 +58,7 @@ def validate_annotations(manifest: dict, annotations: dict, *, require_all: bool
                 raise ValueError('Reviewed event lies outside source video')
     if any(len(groups) != 1 for groups in duplicate_groups.values()):
         raise ValueError('Identical videos assigned to different source groups')
+    resolve_annotations_by_sha(manifest['records'], annotations)
     leakage = sum(len(splits) > 1 for splits in group_splits.values())
     if require_all and leakage:
         raise ValueError('Source groups overlap dev and holdout; regroup before finalizing')

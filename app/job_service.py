@@ -19,6 +19,7 @@ from app.analyzer import UnconfiguredAnalyzer
 from app.analyzer_readiness import analyzer_runtime_status
 from app.config import Settings
 from app.rules import load_rule_catalog
+from app.review import review_rule_ids
 from app.storage import JobStore
 from app.video import VideoInfo, VideoValidationError
 from app.worker import JobRunner
@@ -46,8 +47,9 @@ class SourceVideo:
 class _UploadAdmission:
     """A request-scoped capability: accept once, otherwise return its slot."""
 
-    def __init__(self, service: JobService) -> None:
+    def __init__(self, service: JobService, *, review: bool = False) -> None:
         self._service = service
+        self._review = review
         self._transferred = False
         self._used = False
 
@@ -58,7 +60,7 @@ class _UploadAdmission:
         # Multipart receiving has already finished under the HTTP guard's limits.
         # Save, probe and commit together outside the event loop. Keep ownership
         # until the thread finishes even when its HTTP request is cancelled.
-        pending = asyncio.create_task(asyncio.to_thread(self._service._persist_upload, filename, source))
+        pending = asyncio.create_task(asyncio.to_thread(self._service._persist_upload, filename, source, review=self._review))
         cancellation = None
         while True:
             try:
@@ -139,8 +141,26 @@ class JobService:
             reason = {"code": "video_tools_unavailable", "message": "Local FFmpeg and FFprobe are required"}
         elif runtime is not None and not runtime["ready"]:
             reason = runtime["unavailable_reason"]
+        candidates = list(review_rule_ids(self._catalog)) if self._catalog is not None else []
+        review_reason = reason
+        if not self._settings.experimental_review:
+            review_reason = {"code": "review_disabled", "message": "Experimental review has not been enabled"}
+        elif not configured or self._catalog_error:
+            pass
+        elif not candidates:
+            review_reason = {"code": "review_unavailable", "message": "No supported observation classes are configured"}
+        elif not all(tools.values()):
+            review_reason = {"code": "video_tools_unavailable", "message": "Local FFmpeg and FFprobe are required"}
+        elif runtime is not None and not runtime["ready"]:
+            review_reason = runtime["unavailable_reason"]
+        else:
+            review_reason = None
         return {
             "ready": reason is None,
+            "review": {
+                "enabled": self._settings.experimental_review, "ready": review_reason is None,
+                "rule_ids": candidates, "unavailable_reason": review_reason,
+            },
             "analyzer": {
                 "configured": configured, "enabled_rule_ids": enabled,
                 "runtime": runtime,
@@ -174,15 +194,16 @@ class JobService:
         return {"items": items, "enabled_count": len(self._catalog.enabled_rule_ids), "total": len(items)}
 
     @asynccontextmanager
-    async def admit_upload(self) -> AsyncIterator[_UploadAdmission]:
+    async def admit_upload(self, *, review: bool = False) -> AsyncIterator[_UploadAdmission]:
         # Readiness can contact the loopback model. Do not block HTTP navigation
         # or reserve the upload slot until the bounded check has completed.
-        failure = (await asyncio.to_thread(self.status))["unavailable_reason"]
+        status = await asyncio.to_thread(self.status)
+        failure = (status["review"] if review else status)["unavailable_reason"]
         if failure is not None:
             raise ServiceError(503, failure["code"], failure["message"])
         if not self._runner.reserve():
             raise ServiceError(429, "server_busy", "The analyzer is busy; retry after the current job finishes", headers={"Retry-After": "5"})
-        admission = _UploadAdmission(self)
+        admission = _UploadAdmission(self, review=review)
         try:
             yield admission
         finally:
@@ -212,7 +233,7 @@ class JobService:
             raise ServiceError(404, "source_unavailable", "The source video is no longer available")
         return SourceVideo(path=path, filename=metadata["filename"])
 
-    def _persist_upload(self, filename: str | None, source: BinaryIO) -> dict:
+    def _persist_upload(self, filename: str | None, source: BinaryIO, *, review: bool = False) -> dict:
         filename = _display_name(filename)
         job_id = str(uuid4())
         job_dir = self._store.job_dir(job_id)
@@ -232,6 +253,8 @@ class JobService:
                 raise ServiceError(422, "empty_video", "Video file is empty")
             info = self._probe(video_path, self._settings.ffprobe_bin, self._settings.probe_timeout_sec, self._settings.max_video_duration_sec)
             metadata = {"size_bytes": size, **info.as_dict()}
+            if review:
+                metadata["analysis_mode"] = "experimental_review"
             created_at = self._store.create(job_id, filename, metadata)
         except BaseException as exc:
             if directory_created:

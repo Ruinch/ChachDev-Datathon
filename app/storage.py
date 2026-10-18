@@ -157,7 +157,7 @@ class JobStore:
         verdict = result.get("verdict")
         if verdict not in ("violation", "no_violation"):
             verdict = None
-        events = result.get("violations")
+        events = result.get("observations") if result.get("mode") == "experimental_review" else result.get("violations")
         scope = result.get("analysis_scope")
         with self._connection() as conn:
             changed = conn.execute(
@@ -241,6 +241,8 @@ class JobStore:
                 },
             }
             scope = _json_object(row["analysis_scope_json"])
+            if raw_metadata.get("analysis_mode") == "experimental_review":
+                item["metadata"]["analysis_mode"] = "experimental_review"
             if scope:
                 item["analysis_scope"] = scope
             items.append(item)

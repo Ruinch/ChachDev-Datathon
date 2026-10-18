@@ -59,6 +59,31 @@ function setup(t, overrides = {}, url) {
   return { session, calls, nav, clock };
 }
 
+test("explicit experimental readiness uploads to review while strict readiness stays false", async t => {
+  let reviews = 0;
+  const { session, calls } = setup(t, {
+    getSystem: async () => ({ ...READY, ready: false, review: { enabled: true, ready: true } }),
+    startReview: async () => { reviews++; return { job_id: ID, status: "processing" }; },
+  });
+  session.setKey("secret");
+  session.selectFile(FILE);
+  assert.equal(await session.start(5), true);
+  assert.equal(reviews, 1);
+  assert.equal(calls.starts, 0);
+  assert.equal(session.state.system.ready, false);
+});
+
+test("unavailable experimental mode cannot silently fall back to strict analysis", async t => {
+  const { session, calls } = setup(t, {
+    getSystem: async () => ({ ...READY, review: { enabled: true, ready: false } }),
+    startReview: () => assert.fail("unavailable review submitted"),
+  });
+  session.setKey("secret");
+  session.selectFile(FILE);
+  await assert.rejects(session.start(5), /не готов/);
+  assert.equal(calls.starts, 0);
+});
+
 test("a deep link restores once after connection, including duplicate route notifications", async t => {
   const job = deferred();
   let requests = 0;

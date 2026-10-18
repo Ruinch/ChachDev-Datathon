@@ -74,6 +74,14 @@ def api_router(service: JobService) -> APIRouter:
             raise ServiceError(503, "invalid_legal_guide", "The local legal guide is missing or invalid") from exc
 
     @router.post(
+        "/api/v1/review", status_code=202, response_model=None, dependencies=[API_AUTH],
+        responses={
+            **AUTH_ERRORS,
+            202: {"model": ProcessingJobResponse, "description": "Accepted for experimental observation review; no verified verdict will be issued"},
+            **{code: {"model": ApiErrorResponse} for code in (408, 413, 415, 422, 429, 503, 507)},
+        },
+    )
+    @router.post(
         "/api/v1/analyze", status_code=202, response_model=None, dependencies=[API_AUTH],
         responses={
             **AUTH_ERRORS,

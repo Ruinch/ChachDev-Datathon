@@ -26,6 +26,9 @@ if ($env:APP_LOCAL_MODEL_URL -and $env:APP_LOCAL_MODEL_URL -ne $endpoint) {
     throw 'APP_LOCAL_MODEL_URL differs from ModelPort. Use the matching local port or start the model separately.'
 }
 $env:APP_LOCAL_MODEL_URL = $endpoint
+$modelLaunch = Get-LocalModelImageTokenSettings
+$modelLaunch.Model = '3.5-4b'
+$modelLaunch.Port = $ModelPort
 
 function Test-LocalModel {
     try {
@@ -45,17 +48,17 @@ try {
     & $pythonPath -c 'import av'
     if ($LASTEXITCODE -ne 0) { throw 'PyAV is missing. Run scripts/setup.ps1 -IncludeML before starting the local model.' }
     if ($CheckOnly) {
-        & (Join-Path $projectRoot 'ml_tools/start_model.ps1') -Model '3.5-4b' -Port $ModelPort -CheckOnly
+        & (Join-Path $projectRoot 'ml_tools/start_model.ps1') @modelLaunch -CheckOnly
         Write-Host 'Local launch prerequisites checked without starting a server. Prediction quality and live readiness have not been tested.'
         return
     }
     if (Test-LocalModel) {
         if (-not $UseExistingModel) { throw 'A model already answers on this port. Stop your existing model first, or use -UseExistingModel after confirming its weights and launch parameters match docs/second-laptop.md.' }
-        & (Join-Path $projectRoot 'ml_tools/start_model.ps1') -Model '3.5-4b' -Port $ModelPort -CheckOnly
-        Write-Warning 'Reusing an explicitly selected existing model. HTTP health does not prove its weights or launch parameters.'
+        & (Join-Path $projectRoot 'ml_tools/start_model.ps1') @modelLaunch -CheckOnly
+        Write-Warning 'Reusing an explicitly selected existing model. HTTP health and local file checks do not prove its weights or launch parameters, including the configured image token limits.'
     }
     else {
-        $ownedModel = & (Join-Path $projectRoot 'ml_tools/start_model.ps1') -Model '3.5-4b' -Port $ModelPort -Background
+        $ownedModel = & (Join-Path $projectRoot 'ml_tools/start_model.ps1') @modelLaunch -Background
         $deadline = [DateTime]::UtcNow.AddSeconds(90)
         while (-not (Test-LocalModel)) {
             if ($ownedModel.HasExited) { throw 'Local model exited during startup. Check CUDA, weights and GPU memory.' }
