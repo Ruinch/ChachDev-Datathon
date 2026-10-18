@@ -12,6 +12,10 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $null = Initialize-ProjectEnvironment -ProjectRoot $projectRoot -EnvPath $EnvPath
 if (-not $env:APP_ANALYZER_FACTORY) { $env:APP_ANALYZER_FACTORY = 'app.local_analyzer:build_analyzer' }
 if (-not $env:APP_RULE_CATALOG_PATH) { $env:APP_RULE_CATALOG_PATH = Join-Path $projectRoot 'app/data/ml-rules.json' }
+if (-not $env:APP_ML_INPUT_MODE) { $env:APP_ML_INPUT_MODE = 'video' }
+if (-not $env:APP_ML_FRAMES) {
+    $env:APP_ML_FRAMES = $(if ($env:APP_ML_INPUT_MODE -eq 'video') { '24' } else { '12' })
+}
 $endpoint = "http://127.0.0.1:$ModelPort"
 if ($env:APP_LOCAL_MODEL_URL -and $env:APP_LOCAL_MODEL_URL -ne $endpoint) {
     throw 'APP_LOCAL_MODEL_URL differs from ModelPort. Use the matching local port or start the model separately.'

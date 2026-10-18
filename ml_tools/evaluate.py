@@ -78,6 +78,8 @@ def main():
     parser.add_argument('--stride-sec', type=float, default=18)
     parser.add_argument('--annotations', type=Path)
     parser.add_argument('--max-side', type=int, default=848)
+    parser.add_argument('--input-mode', choices=['images', 'video'], default='images')
+    parser.add_argument('--observation-model', action='store_true')
     parser.add_argument('--rules', type=Path, default=Path('app/data/ml-rules.json'))
     parser.add_argument('--ids', nargs='+', help='Explicit subset for diagnostics; recorded in report')
     parser.add_argument('--model-lock', type=Path, default=Path('ml_tools/model35-lock.json'),
@@ -106,8 +108,16 @@ def main():
         raise SystemExit('Choose a fresh --output directory to preserve previous measurements.')
     args.output.mkdir(parents=True, exist_ok=True)
     cfg = AnalyzerConfig(endpoint=args.endpoint, budget_sec=args.budget_sec, frames_per_window=args.frames,
-                         window_sec=args.window_sec, stride_sec=args.stride_sec, max_side=args.max_side)
-    analyzer = QwenLocalAnalyzer(cfg)
+                         window_sec=args.window_sec, stride_sec=args.stride_sec, max_side=args.max_side, input_mode=args.input_mode)
+    if args.observation_model:
+        if args.input_mode != 'video':
+            raise SystemExit('Observation model requires --input-mode video')
+        from ml_tools.observation import ObservationModel, OBSERVATION_PROMPT
+        analyzer = QwenLocalAnalyzer(cfg, model=ObservationModel(args.endpoint))
+        effective_prompt = OBSERVATION_PROMPT
+    else:
+        analyzer = QwenLocalAnalyzer(cfg)
+        effective_prompt = PROMPT
     catalog = load_rule_catalog(args.rules)
     # Research measures candidate procedures without activating them in the API.
     # Predictions stay private and are not materialized as verified legal findings.
@@ -117,9 +127,13 @@ def main():
     provenance = {
         'model_lock': json.loads(args.model_lock.read_text(encoding='utf-8')),
         'model_identity_verified': False,
-        'prompt_sha256': hashlib.sha256(PROMPT.encode('utf-8')).hexdigest(),
+        'prompt_sha256': hashlib.sha256(effective_prompt.encode('utf-8')).hexdigest(),
+        'observation_model': args.observation_model,
         'catalog_sha256': hashlib.sha256(args.rules.read_bytes()).hexdigest(),
         'analyzer_sha256': hashlib.sha256(Path(analyzer_module.__file__).read_bytes()).hexdigest(),
+        'component_sha256': {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in (
+            'app/local_analyzer.py', 'app/ml/model.py', 'app/ml/rules.py', 'app/ml/video.py',
+            'app/ml/media_input.py', 'ml_tools/observation.py')},
     }
     rows = []
     event_totals = dict(tp=0, fp=0, fn=0, reviewed_videos=0)

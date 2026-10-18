@@ -4,6 +4,7 @@ import math
 import os
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from app.analyzer import AnalysisContext, DetectedViolation, InsufficientEvidenceError, LocalAnalysisResult
@@ -23,12 +24,15 @@ class AnalyzerConfig:
     max_side: int = 848
     max_duration_sec: float = 180
     max_refinements: int = 12
+    input_mode: str = 'images'
 
     def __post_init__(self):
         for value in (self.budget_sec, self.window_sec, self.stride_sec, self.sample_fps, self.max_duration_sec):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Timing and sampling settings must be finite and positive")
-        if self.stride_sec > self.window_sec or not 2 <= self.frames_per_window <= 16:
+        if self.input_mode not in {'images', 'video'}:
+            raise ValueError('Unsupported model input mode')
+        if self.stride_sec > self.window_sec or not 2 <= self.frames_per_window <= (32 if self.input_mode == 'video' else 16):
             raise ValueError("Invalid window coverage or frame count")
         if not 128 <= self.max_side <= 1024 or not 0 <= self.max_refinements <= 100:
             raise ValueError("Invalid image size or refinement limit")
@@ -43,12 +47,16 @@ class Candidate:
     observation: str
     context_start: float = 0
     context_end: float = 0
+    context_frames: tuple[Frame, ...] = ()
+    sample_tolerance: float = 0
 
 
 def candidates(result: WindowResult, frames: list[Frame]) -> list[Candidate]:
     return [Candidate(e.rule_id, frames[e.start_frame].timestamp, frames[e.end_frame].timestamp,
                       frames[e.peak_frame].timestamp, e.observation,
-                      frames[0].timestamp, frames[-1].timestamp) for e in result.events]
+                      frames[0].timestamp, frames[-1].timestamp, tuple(frames),
+                      max(b.timestamp-a.timestamp for a, b in zip(frames, frames[1:]))/2)
+            for e in result.events]
 
 
 def merge_events(events: list[Candidate]) -> list[Candidate]:
@@ -58,10 +66,48 @@ def merge_events(events: list[Candidate]) -> list[Candidate]:
         if merged and merged[-1].rule_id == event.rule_id and event.start <= merged[-1].end:
             previous = merged[-1]
             merged[-1] = Candidate(previous.rule_id, previous.start, max(previous.end, event.end), previous.peak, previous.observation,
-                                  min(previous.context_start, event.context_start), max(previous.context_end, event.context_end))
+                                  min(previous.context_start, event.context_start), max(previous.context_end, event.context_end),
+                                  tuple(sorted({f.timestamp: f for f in (*previous.context_frames, *event.context_frames)}.values(),
+                                               key=lambda f: f.timestamp)),
+                                  max(previous.sample_tolerance, event.sample_tolerance))
         else:
             merged.append(event)
     return sorted(merged, key=lambda e: e.peak)
+
+
+def refinement_frames(video, event: Candidate, count: int) -> list[Frame]:
+    """Retain the screening evidence and add samples around the detected action.
+
+    Resampling an entire window at a different uniform spacing can drop the very
+    handover/role cue which supported a candidate. Only merged contexts exceeding
+    the input cap must be reduced; retain their event anchors and outer context.
+    """
+    if count < 5:
+        raise ValueError('Refinement needs space for event and context anchors')
+    original = list(event.context_frames) or select_frames(video, event.context_start, event.context_end, count)
+    anchors = {event.start, event.peak, event.end, original[0].timestamp, original[-1].timestamp}
+    if len(original) > count:
+        chosen = {f.timestamp: f for f in original if f.timestamp in anchors}
+        remaining = [f for f in original if f.timestamp not in chosen]
+        slots = count-len(chosen)
+        indices = ([round(i*(len(remaining)-1)/(slots-1)) for i in range(slots)] if slots > 1
+                   else [len(remaining)//2] if slots == 1 else [])
+        chosen.update((remaining[i].timestamp, remaining[i]) for i in indices)
+    else:
+        chosen = {f.timestamp: f for f in original}
+    nearby = [f for f in video.frames if max(0, event.start-2) <= f.timestamp <= event.end+2
+              and f.timestamp not in chosen]
+    nearby.sort(key=lambda f: (min(abs(f.timestamp-t) for t in (event.start, event.peak, event.end)), f.timestamp))
+    for frame in nearby[:max(0, count-len(chosen))]:
+        chosen[frame.timestamp] = frame
+    return sorted(chosen.values(), key=lambda f: f.timestamp)
+
+
+def same_candidate(original: Candidate, refined: Candidate) -> bool:
+    # A point between sparse screening samples may move by half a sample spacing.
+    return (original.rule_id == refined.rule_id
+            and refined.start <= original.end+original.sample_tolerance
+            and refined.end >= original.start-original.sample_tolerance)
 
 
 class QwenLocalAnalyzer:
@@ -75,7 +121,7 @@ class QwenLocalAnalyzer:
 
     def __init__(self, config: AnalyzerConfig | None = None, *, model=None):
         self.config = config or AnalyzerConfig()
-        self.model = model or LoopbackModel(self.config.endpoint)
+        self.model = model or LoopbackModel(self.config.endpoint, input_mode=self.config.input_mode)
 
     def analyze(self, context: AnalysisContext) -> LocalAnalysisResult:
         result, _ = self.analyze_with_metrics(context)
@@ -117,14 +163,12 @@ class QwenLocalAnalyzer:
             for event in pending:
                 # Preserve the original operation context: cropping to the peak alone
                 # can remove the customer handover/start and make refinement invalid.
-                frames = select_frames(video, max(0, min(event.context_start, event.start - 2)),
-                                       min(video.duration, max(event.context_end, event.end + 2)), min(16, cfg.frames_per_window + 4))
+                frames = refinement_frames(video, event, min(32 if cfg.input_mode == 'video' else 16, cfg.frames_per_window + 4))
                 result = self.model.infer(frames, check_deadline(deadline), refine=True, rule_ids=(event.rule_id,))
                 if not result.assessable:
                     unassessable += 1
                 # New unrelated claims at refinement cannot bypass the two-pass check.
-                refined.extend(e for e in candidates(result, frames) if e.rule_id == event.rule_id
-                               and e.start <= event.end and e.end >= event.start)
+                refined.extend(e for e in candidates(result, frames) if same_candidate(event, e))
             check_deadline(deadline)
             events = merge_events(refined)
             # Specific next-customer event takes precedence over generic cash storage.
@@ -146,7 +190,8 @@ class QwenLocalAnalyzer:
             metrics = {"elapsed_sec": round(time.monotonic() - started, 3), "queue_sec": round(acquired - started, 3),
                        "decode_sec": round(decoded - acquired, 3), "duration_sec": round(video.duration, 3),
                        "sampled_frames": len(video.frames), "decoded_frames": video.decoded_frames,
-                       "windows": len(spans), "refinements": len(pending), "events": len(violations)}
+                       "windows": len(spans), "refinements": len(pending), "events": len(violations),
+                       "candidate_counts": dict(Counter(e.rule_id for e in pending))}
             return result, metrics
         finally:
             self._gpu_lock.release()
@@ -159,4 +204,5 @@ def build_analyzer() -> QwenLocalAnalyzer:
         budget_sec=float(os.getenv('APP_ML_BUDGET_SECONDS', '210')),
         max_side=int(os.getenv('APP_ML_MAX_SIDE', '848')),
         frames_per_window=int(os.getenv('APP_ML_FRAMES', '12')),
+        input_mode=os.getenv('APP_ML_INPUT_MODE', 'images'),
     ))

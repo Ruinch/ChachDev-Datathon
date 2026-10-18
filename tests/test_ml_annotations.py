@@ -45,7 +45,7 @@ def test_import_preserves_human_priority_without_inventing_camera_groups(tmp_pat
     assert (human_path.read_bytes(), ai_path.read_bytes()) == before
 
 
-@pytest.mark.parametrize('group', ['', '  ', 'organizer-single-camera'])
+@pytest.mark.parametrize('group', ['', '  ', 'organizer-single-camera', 'unknown-session', 'unknown', 'unassigned'])
 def test_unverified_camera_group_cannot_be_finalized(group):
     annotation = dict(sha256='synthetic-a', reviewed=True, source_group=group,
                       verdict='no_violation', events=[])

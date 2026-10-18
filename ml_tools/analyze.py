@@ -19,6 +19,8 @@ def main():
     parser.add_argument('video', type=Path)
     parser.add_argument('--output', type=Path, default=Path('.local_ml/single-result.json'))
     parser.add_argument('--endpoint', default='http://127.0.0.1:8091')
+    parser.add_argument('--input-mode', choices=['images', 'video'], default='images')
+    parser.add_argument('--frames', type=int, default=12)
     parser.add_argument('--rules', type=Path, default=Path('app/data/ml-rules.json'))
     parser.add_argument('--ffprobe', default=os.getenv('APP_FFPROBE_BIN', '.local_tools/ffmpeg/bin/ffprobe.exe'))
     parser.add_argument('--evidence', action='store_true', help='Extract real JPEGs and write complete API JSON')
@@ -31,7 +33,8 @@ def main():
         duration = probe_video(args.video, args.ffprobe, 15, 180).duration_sec
         catalog = load_rule_catalog(args.rules)
         rule_ids = catalog.enabled_rule_ids if args.evidence else tuple(rule.id for rule in catalog.rules)
-        result, metrics = QwenLocalAnalyzer(AnalyzerConfig(endpoint=args.endpoint)).analyze_with_metrics(
+        result, metrics = QwenLocalAnalyzer(AnalyzerConfig(endpoint=args.endpoint,
+            input_mode=args.input_mode, frames_per_window=args.frames)).analyze_with_metrics(
             AnalysisContext(job_id, args.video, duration, rule_ids))
         if args.evidence:
             import imageio_ffmpeg

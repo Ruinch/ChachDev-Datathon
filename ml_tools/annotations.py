@@ -29,8 +29,8 @@ def validate_annotations(manifest: dict, annotations: dict, *, require_all: bool
         group = annotation.get('source_group', '').strip()
         if not group:
             raise ValueError('Reviewed annotation requires a source/camera/session group')
-        if group == 'organizer-single-camera':
-            raise ValueError('Legacy automatic camera placeholder must be replaced after local source-group review')
+        if group.lower() in {'organizer-single-camera', 'unknown-session', 'unknown', 'unassigned'}:
+            raise ValueError('Unknown/automatic camera placeholder must be replaced after local source-group review')
         reviewed += 1
         duplicate_groups.setdefault(record['sha256'], set()).add(group)
         if record['split'] != 'quarantine':

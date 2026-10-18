@@ -1,0 +1,97 @@
+{
+  "fixture_only": true,
+  "description": "Synthetic adapter/error examples for participant 1. No real recordings, legal findings or confidence probabilities. API adds job_id, source JPEGs and catalog references to adapter results.",
+  "examples": [
+    {
+      "name": "positive",
+      "kind": "adapter_result",
+      "payload": {
+        "verdict": "violation",
+        "violations": [
+          {
+            "rule_id": "R20-A",
+            "timecode_sec": 8.0,
+            "description": "Синтетический пример формата события; не результат распознавания.",
+            "evidence_timestamps_sec": [
+              6.0,
+              8.0,
+              10.0
+            ]
+          }
+        ],
+        "analysis_complete": true,
+        "checked_rule_ids": [
+          "R20-A",
+          "R20-B",
+          "R20-C",
+          "R22"
+        ],
+        "limitations": []
+      }
+    },
+    {
+      "name": "negative",
+      "kind": "adapter_result",
+      "payload": {
+        "verdict": "no_violation",
+        "violations": [],
+        "analysis_complete": true,
+        "checked_rule_ids": [
+          "R20-A",
+          "R20-B",
+          "R20-C",
+          "R22"
+        ],
+        "limitations": []
+      }
+    },
+    {
+      "name": "partial_positive",
+      "kind": "adapter_result",
+      "payload": {
+        "verdict": "violation",
+        "violations": [
+          {
+            "rule_id": "R20-A",
+            "timecode_sec": 8.0,
+            "description": "Синтетический пример формата события; не результат распознавания.",
+            "evidence_timestamps_sec": [
+              6.0,
+              8.0,
+              10.0
+            ]
+          }
+        ],
+        "analysis_complete": false,
+        "checked_rule_ids": [
+          "R20-A"
+        ],
+        "limitations": [
+          "Синтетический пример: часть последовательности недостаточно различима."
+        ]
+      }
+    },
+    {
+      "name": "insufficient_context",
+      "kind": "job_error",
+      "payload": {
+        "status": "failed",
+        "error": {
+          "code": "insufficient_evidence",
+          "message": "Some video windows lack sufficient visual context"
+        }
+      }
+    },
+    {
+      "name": "runtime_error",
+      "kind": "job_error",
+      "payload": {
+        "status": "failed",
+        "error": {
+          "code": "local_analysis_failed",
+          "message": "Local model unavailable or invalid structured response"
+        }
+      }
+    }
+  ]
+}

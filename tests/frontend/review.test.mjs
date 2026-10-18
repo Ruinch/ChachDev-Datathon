@@ -29,7 +29,7 @@ test("an unknown camera group does not prevent saving human notes as a draft", (
   assert.equal(form.saved().source_group, "");
 });
 
-for (const group of ["", "organizer-single-camera"]) {
+for (const group of ["", "organizer-single-camera", "unknown-session", "unknown", "unassigned"]) {
   test(`a reviewed record cannot confirm an unverified group: ${group || "blank"}`, () => {
     const form = reviewForm();
     form.elements.get("reviewed").checked = true;

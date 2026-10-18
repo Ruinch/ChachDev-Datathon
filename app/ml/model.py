@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,7 +58,8 @@ visible actions in THIS sequence, never from a fixed left/right/near/far positio
 Handling money or standing beside a counter alone does not distinguish cashier from customer.
 Before reporting a departure, trace the departing person back to role-specific service actions visible
 earlier in the same sequence. A customer departing is not a cashier leaving the workstation.
-For R20-A verify that the person leaving is the depositor; for R22 and R20-C verify it is the cashier.
+For R20-A verify that the person leaving is the depositor; for R22 verify it is the cashier.
+For R20-C verify completion of the deposit and persistence of the same banknotes, not a mandatory departure.
 For R20-B verify two different customer service episodes, not a cashier moving to another side of the desk.
 If the role needed for a relevant event cannot be established, set assessable=false and omit that event.
 After an occlusion or camera cut, do not assume an unverified actor correspondence.
@@ -74,7 +76,8 @@ An event requires ALL listed conditions visibly supported in the given sequence.
 keys ONLY if all are supported. Do not infer absence from a crop or missing frames. Do not invent a violation.
 For each event give start_frame, end_frame, peak_frame (zero-based frame indices, start<=peak<=end).
 The start/end are the actual event, not automatically the whole window. peak_frame is the earliest
-frame that clearly shows the event's triggering change (departure or next customer), not the last
+frame that clearly shows the event's triggering change (departure, next customer, or completed service
+with prior cash left outside storage), not the last
 frame merely because money is still visible. If the trigger is hidden, do not invent a timestamp.
 Use a concise Russian observation describing visible actions only. Never generate legal references.
 Separate different episodes, including repeated events of the same rule.
@@ -82,57 +85,81 @@ Separate different episodes, including repeated events of the same rule.
 
 
 class LoopbackModel:
-    def __init__(self, endpoint: str = "http://127.0.0.1:8091", max_tokens: int = 1536):
+    def __init__(self, endpoint: str = "http://127.0.0.1:8091", max_tokens: int = 1536, *, input_mode: str = 'images'):
         self.endpoint = validate_endpoint(endpoint)
         # Explicitly disable environment/system proxy use. No remote fallback.
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         self.max_tokens = max_tokens
+        if input_mode not in {'images', 'video'}:
+            raise ValueError('Unsupported local model input mode')
+        self.input_mode = input_mode
 
     def infer(self, frames: list[Frame], timeout: float, *, refine: bool = False,
               rule_ids: tuple[str, ...] | None = None) -> WindowResult:
+        started = time.monotonic()
         if len(frames) < 2:
             raise VideoAnalysisError("Too few frames to assess a temporal event")
         active = tuple(RULES) if rule_ids is None else rule_ids
         if not active or set(active) - set(RULES):
             raise VideoAnalysisError("Unsupported or empty local procedure set")
         content = [{"type": "text", "text": ("Independently recheck this sequence; reject unsupported events. " if refine else "Check this chronological sequence. ") + "Report ONLY these procedure IDs: " + ", ".join(active)}]
-        for i, frame in enumerate(frames):
-            content.append({"type": "text", "text": f"Frame {i}, original timestamp {frame.timestamp:.3f} s"})
-            content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(frame.jpeg).decode("ascii")}})
+        if self.input_mode == 'video':
+            from app.ml.media_input import temporal_content
+            content.extend(temporal_content(frames))
+        else:
+            for i, frame in enumerate(frames):
+                content.append({"type": "text", "text": f"Frame {i}, original timestamp {frame.timestamp:.3f} s"})
+                content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(frame.jpeg).decode("ascii")}})
         schema = WindowResult.model_json_schema()
         schema["$defs"]["Event"]["properties"]["rule_id"]["enum"] = list(active)
         for field in ("start_frame", "end_frame", "peak_frame"):
             schema["$defs"]["Event"]["properties"][field]["maximum"] = len(frames) - 1
+        try:
+            result = WindowResult.model_validate(self.complete(content, PROMPT, schema,
+                timeout - (time.monotonic() - started)))
+        except ValidationError:
+            raise VideoAnalysisError('Local model JSON failed schema validation') from None
+        for event in result.events:
+            if event.rule_id not in active:
+                raise VideoAnalysisError('Model returned a procedure outside enabled scope')
+            if not 0 <= event.start_frame <= event.peak_frame <= event.end_frame < len(frames):
+                raise VideoAnalysisError('Model returned invalid frame indices')
+            if set(event.conditions) != set(RULES[event.rule_id].criteria) or len(set(event.conditions)) != 4:
+                raise VideoAnalysisError('Model event lacks the required visible conditions')
+        return result
+
+    def complete(self, content: list[dict], prompt: str, schema: dict, timeout: float) -> dict:
+        """Shared bounded loopback transport. Never exposes raw model/error bodies."""
+        started = time.monotonic()
         payload = {
-            "model": "local-cash-vlm", "messages": [{"role": "system", "content": PROMPT}, {"role": "user", "content": content}],
+            "model": "local-cash-vlm", "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": content}],
             "temperature": 0, "seed": 26, "max_tokens": self.max_tokens,
+            # llama.cpp documents batch-dependent nondeterminism with prefix KV
+            # reuse. Each video/window must be evaluated independently of prior jobs.
+            "cache_prompt": False,
             "response_format": {"type": "json_schema", "json_schema": {"name": "window_review", "strict": True, "schema": schema}},
             "stream": False,
         }
         request = urllib.request.Request(self.endpoint + "/v1/chat/completions", data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
         try:
-            with self.opener.open(request, timeout=max(0.01, timeout)) as response:
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise VideoAnalysisError('Local model input preparation exhausted time budget')
+            with self.opener.open(request, timeout=remaining) as response:
                 raw = response.read(128 * 1024 + 1)
             if len(raw) > 128 * 1024:
                 raise VideoAnalysisError("Local model response exceeded size limit")
             choice = json.loads(raw)["choices"][0]
             if choice.get("finish_reason") != "stop":
                 raise VideoAnalysisError("Local model response was incomplete")
-            result = WindowResult.model_validate_json(choice["message"]["content"])
-            for event in result.events:
-                if event.rule_id not in active:
-                    raise VideoAnalysisError("Model returned a procedure outside enabled scope")
-                if not 0 <= event.start_frame <= event.peak_frame <= event.end_frame < len(frames):
-                    raise VideoAnalysisError("Model returned invalid frame indices")
-                if set(event.conditions) != set(RULES[event.rule_id].criteria) or len(set(event.conditions)) != 4:
-                    raise VideoAnalysisError("Model event lacks the required visible conditions")
+            result = json.loads(choice['message']['content'])
+            if not isinstance(result, dict):
+                raise VideoAnalysisError('Local model response must be an object')
             return result
         except VideoAnalysisError:
             raise
         except urllib.error.HTTPError as exc:
             raise VideoAnalysisError(f"Local model HTTP error {exc.code}") from None
-        except ValidationError:
-            raise VideoAnalysisError("Local model JSON failed schema validation") from None
         except json.JSONDecodeError:
             raise VideoAnalysisError("Local model returned invalid JSON") from None
         except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):

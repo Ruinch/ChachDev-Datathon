@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["httpx>=0.27,<1", "pytest>=8,<10"]
 ml = ["av==19.0.1", "openpyxl==3.1.5", "imageio-ffmpeg==0.6.0"]
+ml-review = ["numpy==2.4.4", "opencv-python-headless==4.13.0.92"]
 
 [tool.setuptools.packages.find]
 include = ["app*", "ml_tools*"]
