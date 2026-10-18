@@ -98,7 +98,7 @@ function failureMessage(error) {
     analyzer_unavailable: "Локальный анализатор ещё не подключён. Предпросмотр исходного видео доступен.",
     analyzer_configuration_error: "Не удалось запустить локальную модель. Проверьте её конфигурацию и локальные веса.",
     analysis_not_ready: "Проверяемые процедуры ещё не активированы на сервере.",
-    insufficient_evidence: "Недостаточно видимого контекста для проверки процедур. Вердикт не сформирован; просмотрите исходную запись.",
+    insufficient_evidence: "Не хватает данных для проверки необходимых условий. Вывод не сформирован: нарушение не подтверждено и не исключено. Просмотрите исходную запись.",
     analysis_timeout: "Проверка превысила лимит времени и остановлена. Попробуйте более короткую запись или проверьте скорость модели.",
     job_timeout: "Проверка превысила лимит времени и остановлена.",
     interrupted: "Проверка прервана перезапуском сервера. Загрузите запись повторно.",
@@ -127,14 +127,17 @@ function setStatus(status, note, metadata = session.state.job?.metadata || {}) {
     uploading: "Загружаем видео…",
     processing: "Обрабатываем запись…",
     done: "Проверка завершена",
-    failed: "Проверка не выполнена",
+    failed: "Проверка не завершена",
     connection: "Статус временно недоступен",
   };
+  const insufficient = status === "failed" && session.state.job?.error?.code === "insufficient_evidence";
   statusEmpty.hidden = true;
   statusContent.hidden = false;
-  document.querySelector(".status-main").dataset.status = status;
-  byId("status-indicator").dataset.status = status;
-  byId("status-label").textContent = labels[status] || "Состояние неизвестно";
+  document.querySelector(".status-main").dataset.status = insufficient ? "inconclusive" : status;
+  byId("status-indicator").dataset.status = insufficient ? "inconclusive" : status;
+  byId("status-label").textContent = insufficient
+    ? "Недостаточно данных для вывода"
+    : labels[status] || "Состояние неизвестно";
   byId("status-file").textContent = metadata.filename || filename() || "—";
   byId("status-job").textContent = session.state.jobId || (status === "uploading" ? "Создаётся…" : "—");
   byId("status-note").textContent = note;
@@ -196,7 +199,7 @@ function renderEventDetail(index) {
   });
   eventDetail.append(seek);
   const description = element("section", "detail-block");
-  description.append(element("span", "detail-label", "ОПИСАНИЕ СОБЫТИЯ"));
+  description.append(element("span", "detail-label", "НАБЛЮДЕНИЕ АНАЛИЗАТОРА"));
   description.append(element("p", "event-description", event.description || "Описание не получено."));
   eventDetail.append(description);
   const evidence = element("section", "detail-block");
@@ -228,7 +231,7 @@ function renderEventDetail(index) {
   } else evidence.append(element("p", "evidence-empty", "Кадры для этого события не получены."));
   eventDetail.append(evidence);
   const rule = element("section", "detail-block");
-  rule.append(element("span", "detail-label", "НОРМАТИВНОЕ ОСНОВАНИЕ"));
+  rule.append(element("span", "detail-label", "НОРМА ДЛЯ СОПОСТАВЛЕНИЯ"));
   const box = element("div", "rule-box");
   box.append(element("p", "rule-title", [event.rule?.title, event.rule?.clause].filter(Boolean).join(" · ") || "Источник правила не указан."));
   if (event.rule?.source_url) {
@@ -269,8 +272,10 @@ function renderResult(result) {
   scopeNote.textContent = describeAnalysisScope(scope);
   if (result.verdict === "violation" && events.length) {
     currentEvents = events.slice().sort((a, b) => a.timecode_sec - b.timecode_sec);
-    resultsTitle.textContent = "Найденные эпизоды";
-    summary.textContent = "Событий: " + events.length + ". Выберите эпизод, чтобы проверить запись и правило.";
+    resultsTitle.textContent = "Эпизоды для проверки";
+    summary.textContent = "Событий для проверки: " + events.length + ". " + (scope?.full_video_checked === false
+      ? "Часть записи или процедур оценить не удалось. Учитывайте ограничения ниже и сверьте эпизоды с исходной записью."
+      : "Сверьте каждый эпизод с исходной записью и условиями нормы.");
     badge.textContent = "ТРЕБУЕТ ПРОВЕРКИ";
     badge.dataset.verdict = "violation";
     byId("event-count").textContent = String(events.length).padStart(2, "0");
@@ -294,12 +299,12 @@ function renderResult(result) {
     const clear = result.verdict === "no_violation" && events.length === 0 && scope?.full_video_checked === true;
     if (!clear) scopeNote.hidden = true;
     resultsTitle.textContent = clear ? "Результат проверки" : "Результат недоступен";
-    badge.textContent = clear ? "БЕЗ СОБЫТИЙ" : "НЕТ ДАННЫХ";
+    badge.textContent = clear ? "СОБЫТИЯ НЕ НАЙДЕНЫ" : "НЕТ ДАННЫХ";
     badge.dataset.verdict = clear ? "no_violation" : "unknown";
     noEvents.dataset.state = clear ? "clear" : "unknown";
     summary.textContent = clear ? "Запись проверена по сохранённому набору процедур." : "Сервис вернул неполный ответ.";
-    noEvents.querySelector("h3").textContent = clear ? "По проверяемым процедурам нарушений не обнаружено" : "Не удалось показать результат";
-    noEvents.querySelector("p").textContent = clear ? "Вывод относится к указанным выше сохранённым процедурам этой проверки. Другие действия требуют отдельной оценки по исходной записи." : "Повторите проверку или изучите ответ API.";
+    noEvents.querySelector("h3").textContent = clear ? "По сохранённым процедурам события не найдены" : "Не удалось показать результат";
+    noEvents.querySelector("p").textContent = clear ? "Анализатор мог пропустить событие. Вывод относится только к указанным выше сохранённым процедурам этой проверки. Другие действия требуют отдельной оценки по исходной записи." : "Повторите проверку или изучите ответ API.";
     noEvents.querySelector(".no-events-icon").textContent = clear ? "✓" : "!";
   }
   byId("result-announcement").textContent = "Проверка завершена. " + summary.textContent;
@@ -455,8 +460,8 @@ session.subscribe((state, previous) => {
       uploading: "Передаём файл сервису. Параметры видео проверит сервер.",
       loading: "Запрашиваем сохранённую задачу…",
       processing: "Сервис проверяет запись. Результат появится автоматически.",
-      done: "Результат готов. Сверьте каждый эпизод с исходной записью.",
-      failed: state.job?.status === "failed" ? failureMessage(state.job.error) : state.error?.message || "Проверка не выполнена.",
+      done: "Результат готов. Сверьте автоматический вывод с исходной записью.",
+      failed: state.job?.status === "failed" ? failureMessage(state.job.error) : state.error?.message || "Проверка не завершена.",
       connection: state.pollRetry
         ? state.pollRetry.exhausted
           ? "Автоматическое восстановление не удалось. Обновите статус вручную; новая загрузка не требуется. Проверка на сервере может продолжаться."
@@ -494,13 +499,14 @@ function preparePrintReport(result) {
   }
   report.replaceChildren();
   report.append(element("h2", "", "Кассовый контроль · Отчёт по проверке"));
-  report.append(element("p", "", "Вердикт: " + (result.verdict === "violation" ? "обнаружены события, требующие проверки" : result.verdict === "no_violation" && result.analysis_scope?.full_video_checked ? "по сохранённому набору процедур нарушений не обнаружено" : "результат требует уточнения")));
+  report.append(element("p", "", "Автоматический результат: " + (result.verdict === "violation" ? "найдены эпизоды для проверки" : result.verdict === "no_violation" && result.analysis_scope?.full_video_checked ? "по сохранённому набору процедур события не найдены; анализатор мог пропустить событие" : "результат требует уточнения")));
   report.append(element("p", "print-scope", describeAnalysisScope(result.analysis_scope)));
+  report.append(element("p", "", byId("analysis-advisory").textContent));
   const events = Array.isArray(result.violations) ? result.violations.slice().sort((a, b) => a.timecode_sec - b.timecode_sec) : [];
   for (const [index, event] of events.entries()) {
     const article = element("article", "print-event");
     article.append(element("h3", "", `${index + 1}. ${event.type} · ${formatTime(event.timecode_sec)}`));
-    article.append(element("p", "", event.description || ""));
+    article.append(element("p", "", "Наблюдение анализатора: " + (event.description || "Описание не получено.")));
     const frames = element("div", "print-frames");
     for (const frame of (event.evidence_frames || []).filter(validFrame).slice(0, 3)) {
       const figure = element("figure");
@@ -515,7 +521,7 @@ function preparePrintReport(result) {
     if (event.rule?.source_url) article.append(element("p", "print-reference", event.rule.source_url));
     report.append(article);
   }
-  report.append(element("p", "", "Вывод относится к сохранённому набору процедур этой проверки. Сверьте найденные эпизоды с исходной видеозаписью. Нормативные ссылки сохранены с результатом; редакция справки при анализе не записывалась. Проверьте применимость нормы на дату операции."));
+  report.append(element("p", "", "Нормативные ссылки сохранены с результатом; редакция справки при анализе не записывалась. Проверьте применимость нормы на дату операции."));
 }
 byId("print-result").addEventListener("click", async () => {
   if (!currentResult) return;

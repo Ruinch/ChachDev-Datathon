@@ -113,6 +113,7 @@ form { margin-top: 24px; }
 #job-link { margin-top: 8px; }
 
 .status-main[data-status="failed"] { background: #fdf5f3; border-color: #ead7d2; }
+.status-main[data-status="inconclusive"] { background: #fbf6eb; border-color: #e6d8bb; }
 .status-main[data-status="done"] { background: #f3f8f5; border-color: #d6e6dc; }
 .status-heading { display: flex; align-items: center; gap: 13px; }
 .status-heading .overline { color: var(--quiet); }
@@ -121,6 +122,7 @@ form { margin-top: 24px; }
 .status-indicator[data-status="uploading"], .status-indicator[data-status="processing"] { background: #bb8530; box-shadow: 0 0 0 4px #f7ecd8; }
 .status-indicator[data-status="done"] { background: #3d8b68; box-shadow: 0 0 0 4px #e0f0e6; }
 .status-indicator[data-status="failed"] { background: #b35248; box-shadow: 0 0 0 4px #f7e4df; }
+.status-indicator[data-status="inconclusive"] { background: #ad7b2e; box-shadow: 0 0 0 4px #f7ecd8; }
 
 .status-details { margin: 18px 0 0; }
 
@@ -242,6 +244,7 @@ form { margin-top: 24px; }
 .section-kicker { color: var(--accent); margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0; }
 h1 { margin: 0; font-size: clamp(26px, 2.8vw, 32px); line-height: 1.2; font-weight: 650; letter-spacing: -.035em; }
 .page-description { margin: 9px 0 0; color: var(--muted); max-width: 720px; margin-top: 10px; font-size: 14px; line-height: 1.65; }
+.analysis-advisory { margin: -8px 0 24px; max-width: 920px; color: var(--muted); font-size: 13px; line-height: 1.65; text-wrap: pretty; }
 .service-panel { min-width: 0; border-radius: 9px; background: white; box-shadow: 0 0 0 1px #dce3e9, 0 2px 4px rgba(29, 49, 66, .025); }
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 26px; border: 1px solid var(--line); border-radius: 8px; background: white; }
 .stat-cell { padding: 18px 22px 19px; }
@@ -577,7 +580,7 @@ select { padding-right: 24px; }
   :root { color-scheme: light; }
   body { color: #111; background: white; font-size: 11pt; }
   .app-shell, .app-content, .page, .workspace, .inspection { display: block !important; width: auto; max-width: none; padding: 0; margin: 0; border: 0; box-shadow: none; }
-  .app-sidebar, .app-header, .footer, .skip-link, .page-heading, .intake, .inspection-heading, .source-panel, .status-empty, .status-main .status-indicator, .copy-job, #job-link, #retry-button, .result-actions, .json-inspector, .events-layout, .evidence-dialog, .access-note, #result-announcement { display: none !important; }
+  .app-sidebar, .app-header, .footer, .skip-link, .page-heading, .analysis-advisory, .intake, .inspection-heading, .source-panel, .status-empty, .status-main .status-indicator, .copy-job, #job-link, #retry-button, .result-actions, .json-inspector, .events-layout, .evidence-dialog, .access-note, #result-announcement { display: none !important; }
   [data-view] { display: none !important; }
   #view-analysis { display: block !important; }
   .status-content { padding: 0 0 18px; }

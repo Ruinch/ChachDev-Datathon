@@ -196,7 +196,7 @@ export class ServiceWorkspace {
     const analysisHeading = byId("view-analysis").querySelector("h1");
     analysisHeading.textContent = next === "review" ? "Разбор видеозаписи" : "Новая проверка";
     byId("view-analysis").querySelector(".page-description").textContent = next === "review"
-      ? "Сверьте найденные события с исходной записью, доказательными кадрами и нормативными источниками."
+      ? "Сверьте отмеченные эпизоды с исходной записью, кадрами и условиями применимой нормы."
       : "Загрузите запись кассовой операции. Результат включает события, таймкоды, исходные кадры и нормативные источники.";
     byId("view-analysis").dataset.mode = next === "review" ? "review" : "new";
     if (next !== "new" && next !== "review") byId("source-video").pause();
@@ -245,7 +245,7 @@ export class ServiceWorkspace {
         const state = node("td");
         const completeNegative = job.verdict === "no_violation" && job.analysis_scope?.full_video_checked === true;
         const uncertainResult = job.status === "done" && job.verdict !== "violation" && !completeNegative;
-        const label = job.status === "processing" ? "Обрабатывается" : job.status === "failed" ? "Ошибка обработки" : job.verdict === "violation" ? "Найдены события" : completeNegative ? "Без событий" : "Проверьте результат";
+        const label = job.status === "processing" ? "Обрабатывается" : job.status === "failed" ? "Без результата" : job.verdict === "violation" ? "Эпизоды для проверки" : completeNegative ? "События не найдены" : "Проверьте результат";
         const badge = node("span", "history-status", label);
         badge.dataset.status = uncertainResult ? "unknown" : job.status === "done" ? job.verdict : job.status;
         state.append(badge);

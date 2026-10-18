@@ -47,8 +47,8 @@
             <section class="service-panel journal-panel" aria-label="Список проверок">
               <div class="table-toolbar">
                 <div class="search-field"><label for="history-search">Поиск по названию</label><input id="history-search" type="search" class="text-input" placeholder="Название видеозаписи…" autocomplete="off" /></div>
-                <div class="filter-field"><label for="history-status">Состояние</label><select id="history-status"><option value="all">Все состояния</option><option value="processing">В обработке</option><option value="done">Завершено</option><option value="failed">Ошибка</option></select></div>
-                <div class="filter-field"><label for="history-verdict">Результат</label><select id="history-verdict"><option value="all">Все результаты</option><option value="violation">Есть события</option><option value="no_violation">Без нарушений</option></select></div>
+                <div class="filter-field"><label for="history-status">Состояние</label><select id="history-status"><option value="all">Все состояния</option><option value="processing">В обработке</option><option value="done">Завершено</option><option value="failed">Без результата</option></select></div>
+                <div class="filter-field"><label for="history-verdict">Результат</label><select id="history-verdict"><option value="all">Все результаты</option><option value="violation">Эпизоды для проверки</option><option value="no_violation">События не найдены</option></select></div>
                 <button class="button button-secondary toolbar-refresh" id="history-refresh" type="button">Обновить</button>
               </div>
               <p class="notice table-feedback" id="history-feedback" role="status" hidden></p>
@@ -59,8 +59,9 @@
             </section>
             <p class="page-footnote">Журнал хранится на сервере. Доступ к записям и результатам защищён ключом сервиса.</p>
           </section>
-          <section id="view-analysis" data-view="analysis" aria-labelledby="analysis-title" hidden>
+          <section id="view-analysis" data-view="analysis" aria-labelledby="analysis-title" aria-describedby="analysis-advisory" hidden>
             <div class="page-heading"><div><p class="section-kicker">Анализ видеозаписи</p><h1 id="analysis-title">Новая проверка</h1><p class="page-description">Загрузите запись кассовой операции. Результат включает события, таймкоды, исходные кадры и нормативные источники.</p></div><a class="text-button" href="#checks">← К журналу</a></div>
+            <p class="analysis-advisory" id="analysis-advisory">Сервис выделяет эпизоды для ручной проверки. Модель может ошибаться. Проверяющий оценивает исходное видео, условия операции и применимость нормы.</p>
             <div class="notice upload-uncertain" id="upload-uncertain" data-tone="warning" role="status" hidden>
               <p>Не удалось подтвердить создание задачи. Запись могла быть принята сервисом. Перед повторной отправкой проверьте журнал.</p>
               <a class="text-button" href="#checks">Проверить журнал <span aria-hidden="true">→</span></a>
@@ -176,7 +177,7 @@
             <div class="results-heading">
               <div>
                 <span class="overline">РЕЗУЛЬТАТ ПРОВЕРКИ</span>
-                <h2 id="results-title" tabindex="-1">Найденные эпизоды</h2>
+                <h2 id="results-title" tabindex="-1">Эпизоды для проверки</h2>
                 <p id="results-summary"></p>
               </div>
               <div class="result-actions"><span class="verdict-badge" id="verdict-badge"></span><a class="text-button" id="export-result" download>Скачать JSON</a><button class="text-button" id="copy-result" type="button">Скопировать JSON</button><button class="text-button" id="print-result" type="button">Печать отчёта</button></div>
@@ -190,8 +191,8 @@
             <div class="no-events" id="no-events" hidden>
               <div class="no-events-icon" aria-hidden="true">✓</div>
               <div>
-                <h3>События не обнаружены</h3>
-                <p>Проверка по подключённым правилам завершена. Просмотрите исходную запись, если нужна ручная оценка.</p>
+                <h3>По сохранённым процедурам события не найдены</h3>
+                <p>Анализатор мог пропустить событие. Сверьте результат с исходной записью.</p>
               </div>
             </div>
             <div class="events-layout" id="events-layout" hidden>
