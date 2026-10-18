@@ -183,22 +183,36 @@ class JobRunner:
         self._slot.release()
 
     def start(self, job_id: str) -> None:
-        process = multiprocessing.get_context("spawn").Process(
-            target=_run_job,
-            args=(job_id, self.settings, self.analyzer),
-            name=f"analysis-{job_id}",
-        )
+        process = None
         try:
-            process.start()
+            # Publish both owners before shutdown can inspect them. An admitted
+            # upload may finish saving after shutdown has already begun.
+            with self._state:
+                if self._shutdown.is_set():
+                    self.store.set_failed(job_id, "interrupted", "Processing was interrupted by server shutdown")
+                    self.release()
+                    return
+                process = multiprocessing.get_context("spawn").Process(
+                    target=_run_job,
+                    args=(job_id, self.settings, self.analyzer),
+                    name=f"analysis-{job_id}",
+                )
+                thread = threading.Thread(target=self._supervise, args=(job_id, process), daemon=True)
+                process.start()
+                self._process, self._thread = process, thread
+                thread.start()
         except Exception:
             logger.exception("Could not start analysis worker")
-            self.store.set_failed(job_id, "worker_start_failed", "Could not start the local analysis process")
-            self.release()
-            return
-        with self._state:
-            self._process = process
-            self._thread = threading.Thread(target=self._supervise, args=(job_id, process), daemon=True)
-            self._thread.start()
+            with self._state:
+                self._process, self._thread = None, None
+            try:
+                if process is not None and process.pid is not None:
+                    _terminate_tree(process)
+            finally:
+                try:
+                    self.store.set_failed(job_id, "worker_start_failed", "Could not start the local analysis process")
+                finally:
+                    self.release()
 
     def _supervise(self, job_id: str, process: multiprocessing.Process) -> None:
         try:

@@ -9,6 +9,8 @@ Prepares the validated Windows service environment. Does not install models.
 [CmdletBinding()]
 param(
     [switch]$SkipInstall,
+    [switch]$IncludeML,
+    [ValidateSet('3.12', '3.13')][string]$PythonVersion = '3.13',
     [string]$EnvPath,
     [switch]$AllowMissingMediaTools
 )
@@ -21,10 +23,10 @@ $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
 
 if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
     if ($SkipInstall) { throw 'Project .venv is missing. Run setup.ps1 without -SkipInstall to create it.' }
-    if (-not (Get-Command py -ErrorAction SilentlyContinue)) { throw 'Python launcher not found. Install Python 3.13 for Windows with the launcher, then run setup.ps1 again.' }
-    & py -3.13 -c 'import sys; assert sys.version_info[:2] == (3, 13)'
-    if ($LASTEXITCODE -ne 0) { throw 'Python 3.13 is unavailable. Install it, then run setup.ps1 again.' }
-    & py -3.13 -m venv (Join-Path $projectRoot '.venv')
+    if (-not (Get-Command py -ErrorAction SilentlyContinue)) { throw "Python launcher not found. Install Python $PythonVersion for Windows with the launcher, then run setup.ps1 again." }
+    & py "-$PythonVersion" -c 'import sys; print(sys.version.split()[0])'
+    if ($LASTEXITCODE -ne 0) { throw "Python $PythonVersion is unavailable. Install it, then run setup.ps1 again." }
+    & py "-$PythonVersion" -m venv (Join-Path $projectRoot '.venv')
     if ($LASTEXITCODE -ne 0) { throw 'Could not create the project virtual environment.' }
 }
 
@@ -39,7 +41,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Unsupported virtual environment. Dependencies 
 Push-Location -LiteralPath $projectRoot
 try {
     if (-not $SkipInstall) {
-        & $pythonPath -m pip install --disable-pip-version-check -c (Join-Path $projectRoot 'constraints.txt') -e '.[test]'
+        $extras = if ($IncludeML) { '.[ml,test]' } else { '.[test]' }
+        & $pythonPath -m pip install --disable-pip-version-check -c (Join-Path $projectRoot 'constraints.txt') -e $extras
         if ($LASTEXITCODE -ne 0) { throw 'Service dependency installation failed. Existing configuration was preserved.' }
         & $pythonPath -m pip check
         if ($LASTEXITCODE -ne 0) { throw 'Installed package requirements conflict. Resolve the reported service/ML environment conflict before startup.' }
@@ -72,6 +75,11 @@ try {
     else { Write-Host 'Existing configuration preserved.' }
 
     $null = Initialize-ProjectEnvironment -ProjectRoot $projectRoot -EnvPath $environmentPath
+    if ($IncludeML) {
+        & $pythonPath -c 'import av, openpyxl, imageio_ffmpeg'
+        if ($LASTEXITCODE -ne 0) { throw 'Local ML dependencies are missing. Run setup.ps1 -IncludeML without -SkipInstall to install them.' }
+        Write-Host 'Local ML client dependencies: OK. Runtime and weights are prepared separately; no weights were downloaded.'
+    }
     if ([string]::IsNullOrWhiteSpace($env:APP_API_KEY)) {
         throw 'Existing configuration has no access key. Set APP_API_KEY in that file or the process environment; setup does not overwrite an existing configuration.'
     }

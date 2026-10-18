@@ -379,6 +379,27 @@ test("an authoritative missing job is not retried", async t => {
   assert.equal(session.state.busy, false);
 });
 
+test("opening the same unavailable job retries its status without creating a new analysis", async t => {
+  let requests = 0;
+  const { session, calls, clock } = setup(t, { getJob: async id => {
+    requests++;
+    if (requests === 1) throw Object.assign(new Error("offline"), { status: 0 });
+    return { job_id: id, status: "done", violations: [] };
+  } });
+  session.setKey("secret");
+  await session.connect();
+  await session.openJob(ID);
+  assert.equal(session.state.status, "connection");
+  assert.equal(clock.pending, 1);
+  session.navigate("checks");
+  await session.openJob(ID);
+  assert.equal(requests, 2);
+  assert.equal(session.state.status, "done");
+  assert.equal(session.state.page, "review");
+  assert.equal(clock.pending, 0);
+  assert.equal(calls.starts, 0);
+});
+
 test("forgetting, changing a job, or disposing cancels scheduled status retries", async t => {
   for (const cancel of [session => session.forget(), session => session.openJob(OTHER), session => session.dispose()]) {
     let requests = 0;

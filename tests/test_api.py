@@ -523,3 +523,76 @@ def test_rejected_api_requests_are_not_cacheable(tmp_path):
         assert response.status_code == 401
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_supervisor_start_failure_is_terminal_and_releases_analysis_slot(ready_settings, monkeypatch):
+    """An accepted upload must not remain processing if its watcher cannot start."""
+    import app.worker as worker
+
+    real_thread = worker.threading.Thread
+    failed_once = False
+    unwatched_workers = []
+
+    class UnstartableSupervisor:
+        def start(self):
+            raise RuntimeError("Synthetic operating system thread limit")
+
+        def join(self, timeout=None):
+            pass
+
+    def create_thread(*args, **kwargs):
+        nonlocal failed_once
+        if getattr(kwargs.get("target"), "__name__", None) == "_supervise" and not failed_once:
+            failed_once = True
+            unwatched_workers.append(kwargs["args"][1])
+            return UnstartableSupervisor()
+        return real_thread(*args, **kwargs)
+
+    app = create_app(ready_settings, analyzer=SleepingAnalyzer(), probe=successful_probe)
+    with TestClient(app) as client:
+        monkeypatch.setattr(worker.threading, "Thread", create_thread)
+        accepted = upload(client)
+        assert accepted.status_code == 202
+        result = client.get(f"/api/v1/jobs/{accepted.json()['job_id']}", headers=HEADERS).json()
+        assert result["status"] == "failed"
+        assert result["error"]["code"] == "worker_start_failed"
+        assert client.get("/api/v1/system", headers=HEADERS).json()["busy"] is False
+        assert unwatched_workers[0].pid is not None
+        assert not process_is_running(unwatched_workers[0].pid), "An unsupervised analyzer survived its startup failure"
+        # A later request is admitted after the operating system recovers.
+        retry = upload(client)
+        assert retry.status_code == 202
+
+
+def test_upload_finishing_after_shutdown_does_not_launch_a_new_worker(ready_settings):
+    import threading
+    from httpx import ASGITransport, AsyncClient
+
+    probing, finish_probe = threading.Event(), threading.Event()
+
+    def delayed_probe(*args):
+        probing.set()
+        assert finish_probe.wait(timeout=5), "The shutdown did not finish while validation was pending"
+        return successful_probe(*args)
+
+    app = create_app(ready_settings, analyzer=SleepingAnalyzer(), probe=delayed_probe)
+
+    async def run():
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+                posting = asyncio.create_task(client.post(
+                    "/api/v1/analyze", headers=HEADERS, files={"file": ("sample.mov", VIDEO_BYTES)},
+                ))
+                try:
+                    assert await asyncio.to_thread(probing.wait, 3)
+                    await asyncio.to_thread(app.state.runner.shutdown)
+                finally:
+                    finish_probe.set()
+                accepted = await posting
+                assert accepted.status_code == 202
+                result = (await client.get(f"/api/v1/jobs/{accepted.json()['job_id']}", headers=HEADERS)).json()
+                assert result["status"] == "failed"
+                assert result["error"]["code"] == "interrupted"
+                assert (await client.get("/api/v1/system", headers=HEADERS)).json()["busy"] is False
+
+    asyncio.run(run())

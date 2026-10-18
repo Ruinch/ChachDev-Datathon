@@ -4,13 +4,18 @@ param(
     [string]$BindAddress = '127.0.0.1',
     [ValidateRange(1, 65535)][int]$Port = 8000,
     [ValidateRange(1, 65535)][int]$ModelPort = 8091,
-    [string]$EnvPath
+    [string]$EnvPath,
+    [switch]$RequireAnalyzer,
+    [switch]$UseExistingModel,
+    [switch]$CheckOnly
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
+if ($Port -eq $ModelPort) { throw 'The API port and local model port must differ.' }
 $null = Initialize-ProjectEnvironment -ProjectRoot $projectRoot -EnvPath $EnvPath
 if (-not $env:APP_ANALYZER_FACTORY) { $env:APP_ANALYZER_FACTORY = 'app.local_analyzer:build_analyzer' }
+if ($env:APP_ANALYZER_FACTORY -ne 'app.local_analyzer:build_analyzer') { throw 'start-ml.ps1 starts the included local adapter only. Use start.ps1 for another APP_ANALYZER_FACTORY.' }
 if (-not $env:APP_RULE_CATALOG_PATH) { $env:APP_RULE_CATALOG_PATH = Join-Path $projectRoot 'app/data/ml-rules.json' }
 if (-not $env:APP_ML_INPUT_MODE) { $env:APP_ML_INPUT_MODE = 'video' }
 if (-not $env:APP_ML_FRAMES) {
@@ -35,8 +40,21 @@ function Test-LocalModel {
 
 $ownedModel = $null
 try {
-    & (Join-Path $PSScriptRoot 'check.ps1') -EnvPath $EnvPath -RequireAnalyzer
-    if (-not (Test-LocalModel)) {
+    & (Join-Path $PSScriptRoot 'check.ps1') -EnvPath $EnvPath -RequireAnalyzer:$RequireAnalyzer
+    $pythonPath = Get-ProjectPython -ProjectRoot $projectRoot
+    & $pythonPath -c 'import av'
+    if ($LASTEXITCODE -ne 0) { throw 'PyAV is missing. Run scripts/setup.ps1 -IncludeML before starting the local model.' }
+    if ($CheckOnly) {
+        & (Join-Path $projectRoot 'ml_tools/start_model.ps1') -Model '3.5-4b' -Port $ModelPort -CheckOnly
+        Write-Host 'Local launch prerequisites checked without starting a server. Prediction quality and live readiness have not been tested.'
+        return
+    }
+    if (Test-LocalModel) {
+        if (-not $UseExistingModel) { throw 'A model already answers on this port. Stop your existing model first, or use -UseExistingModel after confirming its weights and launch parameters match docs/second-laptop.md.' }
+        & (Join-Path $projectRoot 'ml_tools/start_model.ps1') -Model '3.5-4b' -Port $ModelPort -CheckOnly
+        Write-Warning 'Reusing an explicitly selected existing model. HTTP health does not prove its weights or launch parameters.'
+    }
+    else {
         $ownedModel = & (Join-Path $projectRoot 'ml_tools/start_model.ps1') -Model '3.5-4b' -Port $ModelPort -Background
         $deadline = [DateTime]::UtcNow.AddSeconds(90)
         while (-not (Test-LocalModel)) {
@@ -45,8 +63,8 @@ try {
             Start-Sleep -Milliseconds 500
         }
     }
-    Write-Host 'Local model ready. Experimental procedure scope; see docs/ml-measurements.md for measured limitations.'
-    & (Join-Path $PSScriptRoot 'start.ps1') -BindAddress $BindAddress -Port $Port -EnvPath $EnvPath -RequireAnalyzer
+    Write-Host 'Local model ready. Recognition quality is not accepted; see docs/ml-native-video.md. Disabled rules remain disabled.'
+    & (Join-Path $PSScriptRoot 'start.ps1') -BindAddress $BindAddress -Port $Port -EnvPath $EnvPath -RequireAnalyzer:$RequireAnalyzer
 } finally {
     if ($ownedModel -and -not $ownedModel.HasExited) { Stop-Process -Id $ownedModel.Id }
 }

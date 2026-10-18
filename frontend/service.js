@@ -68,6 +68,8 @@ export class ServiceWorkspace {
     if (!previous || (!state.connected && previous.connected) || (!state.system && previous.system)) this.invalidate();
     if (!previous || state.page !== previous.page) this.renderPage(state.page, previous?.page);
     if (state.system && state.system !== previous?.system) this.renderConnection(state.system);
+    const finished = state.job && state.job !== previous?.job && ["done", "failed"].includes(state.job.status);
+    if (finished && previous?.jobId === state.jobId && previous.job?.status === "processing") this.lastSummary = null;
     this.updateAccess();
     byId("check-service").disabled = state.busy || state.connecting;
     byId("check-service").textContent = state.connected ? "Обновить состояние" : "Подключиться";
@@ -76,7 +78,6 @@ export class ServiceWorkspace {
     if (state.error && state.error !== previous?.error) this.feedback("connection-feedback", state.error.message, "error");
     if (!state.connected) return;
     const entered = !previous?.connected || previous.page !== state.page;
-    const finished = state.job && state.job !== previous?.job && ["done", "failed"].includes(state.job.status);
     if (state.page === "checks" && (entered || finished)) this.loadHistory();
     if (state.page === "rules" && entered) {
       this.loadRules();

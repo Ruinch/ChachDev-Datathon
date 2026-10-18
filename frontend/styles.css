@@ -569,6 +569,7 @@ select { padding-right: 24px; }
   .dialog-navigation .secondary-button { padding-inline: 9px; font-size: 11px; }
 }
 @media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0ms !important; animation: none !important; }
 }
 @media (pointer: coarse) {

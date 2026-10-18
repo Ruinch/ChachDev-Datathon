@@ -46,7 +46,7 @@
             </div>
             <section class="service-panel journal-panel" aria-label="Список проверок">
               <div class="table-toolbar">
-                <div class="search-field"><label for="history-search">Поиск по названию</label><input id="history-search" type="search" class="text-input" placeholder="Название видеозаписи…" autocomplete="off" /></div>
+                <div class="search-field"><label for="history-search">Поиск по названию</label><input id="history-search" name="q" type="search" class="text-input" maxlength="255" placeholder="Название видеозаписи…" autocomplete="off" /></div>
                 <div class="filter-field"><label for="history-status">Состояние</label><select id="history-status"><option value="all">Все состояния</option><option value="processing">В обработке</option><option value="done">Завершено</option><option value="failed">Без результата</option></select></div>
                 <div class="filter-field"><label for="history-verdict">Результат</label><select id="history-verdict"><option value="all">Все результаты</option><option value="violation">Эпизоды для проверки</option><option value="no_violation">События не найдены</option></select></div>
                 <button class="button button-secondary toolbar-refresh" id="history-refresh" type="button">Обновить</button>

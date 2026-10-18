@@ -22,12 +22,18 @@ from ml_tools.annotations import match_events, validate_annotations
 
 def summarize(rows: list[dict], tolerance_sec: float = 5) -> dict:
     counts = dict(tp=0, fp=0, tn=0, fn=0, failed=0)
+    failures = dict(abstained=0, technical_failed=0, failed_unclassified=0)
+    failed_positives = 0
     point_errors = []
     latencies = []
     for row in rows:
         latencies.append(row['elapsed_sec'])
         if row['status'] != 'done':
             counts['failed'] += 1
+            code = row.get('error_code')
+            failures['abstained' if code == 'insufficient_evidence' else
+                     'technical_failed' if code else 'failed_unclassified'] += 1
+            failed_positives += row['label'] == 'violation'
             continue
         truth = row['label'] == 'violation'
         positive = row['verdict'] == 'violation'
@@ -38,11 +44,13 @@ def summarize(rows: list[dict], tolerance_sec: float = 5) -> dict:
     completed = n - counts['failed']
     def ratio(a, b):
         return round(a / b, 4) if b else None
-    return {**counts, 'videos': n, 'coverage': ratio(completed, n),
+    return {**counts, **failures, 'videos': n, 'coverage': ratio(completed, n),
             'accuracy_completed': ratio(counts['tp'] + counts['tn'], completed),
             'correct_over_all': ratio(counts['tp'] + counts['tn'], n),
             'precision_completed': ratio(counts['tp'], counts['tp'] + counts['fp']),
             'recall_completed': ratio(counts['tp'], counts['tp'] + counts['fn']),
+            'recall_over_all_positives': ratio(counts['tp'], counts['tp'] + counts['fn'] + failed_positives),
+            'positive_videos_without_supported_result': counts['fn'] + failed_positives,
             'elapsed_max_sec': max(latencies, default=0), 'elapsed_median_sec': statistics.median(latencies) if latencies else None,
             'point_matches_within_tolerance': sum(e <= tolerance_sec for e in point_errors),
             'point_predictions_scored': len(point_errors), 'point_tolerance_sec': tolerance_sec,
@@ -160,7 +168,8 @@ def main():
                         event_totals[key] += value
                     event_totals['reviewed_videos'] += 1
             except (VideoAnalysisError, InsufficientEvidenceError) as error:
-                row.update(status='failed', error=str(error), elapsed_sec=round(time.monotonic() - started, 3))
+                row.update(status='failed', error=str(error), error_code=error.code,
+                           elapsed_sec=round(time.monotonic() - started, 3))
             rows.append(row)
             report = {'mode': args.mode, 'configuration': asdict(cfg), 'summary': summarize(rows),
                       'provenance': provenance,

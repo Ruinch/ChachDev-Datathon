@@ -4,7 +4,7 @@ param([ValidateSet('2b','4b','3.5-4b','3.5-9b','3.5-9b-q3')][string]$Model = '3.
       [ValidateRange(64,4096)][int]$ImageMaxTokens = 768,
       [ValidateRange(4096,32768)][int]$ContextSize = 16384,
       [ValidatePattern('^(all|[0-9]{1,2})$')][string]$GpuLayers = 'all',
-      [ValidateRange(0,4096)][int]$ReasoningBudget = 0, [switch]$Background)
+      [ValidateRange(0,4096)][int]$ReasoningBudget = 0, [switch]$Background, [switch]$CheckOnly)
 $ErrorActionPreference = 'Stop'
 if ($ImageMinTokens -gt $ImageMaxTokens) { throw 'ImageMinTokens must not exceed ImageMaxTokens' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -16,8 +16,14 @@ if ($Model -eq '3.5-9b-q3' -and -not $PSBoundParameters.ContainsKey('GpuLayers')
 $weights = Join-Path $projectRoot ('.local_ml/models/' + $weightsName)
 $projector = Join-Path $projectRoot ('.local_ml/models/' + $projectorName)
 foreach ($file in @($runtime, $weights, $projector)) {
-    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing local runtime file: $file" }
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing local runtime file: $file. Prepare the selected public model with ml_tools.install_runtime first; see docs/second-laptop.md." }
 }
+$lockName = switch ($Model) { '3.5-9b-q3' { 'model35-9b-q3-lock.json' }; '3.5-9b' { 'model35-9b-lock.json' }; '3.5-4b' { 'model35-lock.json' }; '4b' { 'model4-lock.json' }; '2b' { 'model-lock.json' } }
+$pythonPath = Join-Path $projectRoot '.venv/Scripts/python.exe'
+if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { throw 'Project .venv is missing. Run scripts/setup.ps1 -IncludeML first.' }
+& $pythonPath (Join-Path $PSScriptRoot 'install_runtime.py') --lock (Join-Path $PSScriptRoot $lockName) --destination (Join-Path $projectRoot '.local_ml') --verify-only | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Local weights or runtime failed lock verification. No model was started and no files were downloaded.' }
+if ($CheckOnly) { Write-Host 'Local model files verified. GPU compatibility and prediction quality require a real run.'; return }
 # No -hf or remote model URLs: inference starts only from local files.
 $modelArguments = @('-m', $weights, '--mmproj', $projector, '--host', '127.0.0.1', '--port', "$Port",
     '--alias', 'local-cash-vlm', '--ctx-size', "$ContextSize", '--parallel', '1', '--gpu-layers', $GpuLayers,

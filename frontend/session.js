@@ -262,7 +262,8 @@ export class WorkspaceSession {
     this.#writeRoute("review", id);
     if (id === this.state.jobId) {
       this.#update({ page: "review", pendingJob: null });
-      return this.#jobRequest?.promise || true;
+      if (this.#jobRequest) return this.#jobRequest.promise;
+      return this.state.status === "connection" ? this.refreshJob() : true;
     }
     this.#cancelJob();
     this.#update({ page: "review", selectedFile: null, pendingJob: null,
